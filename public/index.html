@@ -112,10 +112,10 @@
   #powerWrap label { font-size:10px; color:#8a94ad; letter-spacing:1px; }
   #power { writing-mode:vertical-lr; direction:rtl; width:26px; height:150px; accent-color:#ffb347; touch-action:none; }
   #powerVal { font-size:12px; font-weight:800; color:#ffd166; }
-  #aimHint { position:absolute; left:10px; top:8px; font-size:11px; color:#8a94ad; background:rgba(8,11,22,.7);
-    padding:5px 9px; border-radius:9px; z-index:5; display:none; }
-  #eqWpn { position:absolute; left:10px; top:36px; font-size:12px; font-weight:800; color:#ffd166;
-    background:rgba(8,11,22,.7); padding:5px 10px; border-radius:9px; z-index:5; display:none; }
+  #aimHint { position:absolute; left:10px; top:8px; font-size:12px; font-weight:700; color:#cdd6ea;
+    background:rgba(8,11,22,.72); border:1px solid #1d2740; padding:6px 11px; border-radius:10px;
+    z-index:5; display:none; white-space:nowrap; }
+  #aimJoy.off { opacity:.35; pointer-events:none; }
 
   /* ---------- overlay screens ---------- */
   .overlay { position:fixed; inset:0; display:none; flex-direction:column; align-items:center; justify-content:center;
@@ -148,7 +148,6 @@
     <div id="bigMsg"></div>
     <div id="connBadge">⚠ disconnected — reconnecting…</div>
     <div id="aimHint"></div>
-    <div id="eqWpn">🚀 Bazooka</div>
     <div id="camBtns">
       <button class="cbtn" id="camFollow" title="Centre on my soldier">⌖</button>
       <button class="cbtn" id="camOverview" title="Whole battlefield">🗺</button>

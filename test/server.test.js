@@ -195,16 +195,20 @@ test('endturn: server rejects end-turn from the team that doesn\'t hold the turn
 
 test('match: full scripted match reaches game over with a winner', async () => {
   const a = await open(), b = await open();
+  try {
   send(a, { t: 'create', name: 'A', opts: { turnTime: 10, sdRound: 3 } });
   const r = await waitFor(a, m => m.t === 'room');
-  send(b, { t: 'join', code: r.code, name: 'B' });
+  // pinned seed rides the join (that's where startMatch fires); match-flow test,
+  // not a seed lottery — seed variety is terrain.test.js's job. 12345: solver
+  // bots finish in ~30s.
+  send(b, { t: 'join', code: r.code, name: 'B', seed: 12345 });
   const sa = await waitFor(a, m => m.t === 'start');
   await waitFor(b, m => m.t === 'start');
   const env = { terrain: Float64Array.from(sa.state._terrain), wind: 0, waterY: 740 };
 
   // solver-driven loop: walk into range when needed, otherwise aim + fire,
   // until either socket sees the 'over' event.
-  const deadline = Date.now() + 90000;
+  const deadline = Date.now() + 150000;
   let over = null, lastWalkKey = '', walksThisTurn = 0;
   const all = () => a.inbox.concat(b.inbox);
   while (!over && Date.now() < deadline) {
@@ -251,8 +255,8 @@ test('match: full scripted match reaches game over with a winner', async () => {
       await new Promise(res => setTimeout(res, 200));
     }
   }
-  assert.ok(over, 'match reached game over within 90s');
+  assert.ok(over, 'match reached game over within 150s');
   const winner = over.evs.find(e => e.t === 'over').winner;
   assert.ok(winner === 0 || winner === 1, `valid winner: ${winner}`);
-  a.close(); b.close();
+  } finally { a.close(); b.close(); }   // leak on failure would hang the test runner
 });

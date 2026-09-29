@@ -225,9 +225,9 @@ function updateHUD() {
   canActNow = canAct;
   for (const id of ['leftBtn', 'rightBtn', 'jumpBtn', 'fireBtn', 'endBtn'])
     $(id).classList.toggle('disabled', !canAct);
-  $('powerWrap').style.display = canAct ? '' : 'none';
-  $('aimHint').style.display = canAct ? '' : 'none';
-  $('eqWpn').style.display = started ? '' : 'none';
+  $('powerWrap').style.display = canAct ? 'flex' : 'none';
+  $('aimJoy').classList.toggle('off', !canAct);        // dim joystick when not your turn
+  refreshChip();
   const wl = WEAPON_LIST.find(w => w[0] === weapon) || WEAPON_LIST[0];
   const wlbl = `${wl[1]} ${wl[2].toUpperCase()}`;
   if ($('weaponBtn').dataset.lbl !== wlbl) { $('weaponBtn').dataset.lbl = wlbl; $('weaponBtn').textContent = `${wlbl} ▾`; }
@@ -257,9 +257,18 @@ function aimUp(d) {
   sendAim(); updateAimUI();
 }
 $('power').addEventListener('input', e => { aim.power = +e.target.value; $('powerVal').textContent = aim.power; sendAim(); });
+function refreshChip() {   // one status chip: weapon + aim, top-left
+  const el = $('aimHint');
+  if (!started) { el.style.display = 'none'; return; }
+  const wl = WEAPON_LIST.find(w => w[0] === weapon) || WEAPON_LIST[0];
+  el.style.display = 'block';
+  el.textContent = canActNow
+    ? `${wl[1]} ${wl[2]} · ${Math.round(aim.angle)}° · PWR ${aim.power}`
+    : `${wl[1]} ${wl[2]}`;
+}
 function updateAimUI() {
-  $('aimHint').textContent = `Angle ${Math.round(aim.angle)}° · Power ${aim.power}`;
   $('joyVal').textContent = `${Math.round(aim.angle)}°`;
+  refreshChip();
 }
 
 // ---------- aim joystick: vertical drag; rate ∝ displacement; release stops ----------
@@ -269,7 +278,7 @@ function joyMove(e) {
   const r = joyEl.getBoundingClientRect();
   const mid = r.top + r.height / 2;
   const off = Math.max(-1, Math.min(1, (mid - e.clientY) / (r.height / 2)));  // up = +
-  joy.rate = off * 75;                                    // deg/s at full deflection
+  joy.rate = Math.sign(off) * off * off * 45;             // quadratic: micro-moves = fine aim, full deflection = 45°/s
   knob.style.transform = `translateY(${(-off * (r.height / 2 - 26)).toFixed(1)}px)`;
 }
 joyEl.addEventListener('pointerdown', e => {
@@ -321,8 +330,7 @@ for (const [id, ico, label] of WEAPON_LIST) {
   wtiles[id] = t;
 }
 function refreshWeapons() {
-  const list = WEAPON_LIST.find(w => w[0] === weapon) || WEAPON_LIST[0];
-  $('eqWpn').textContent = `${list[1]} ${list[2]}`;
+  refreshChip();
   for (const [id] of WEAPON_LIST) {
     wtiles[id].classList.toggle('sel', id === weapon);
     wtiles[id].classList.toggle('off', !canActNow);
@@ -343,8 +351,8 @@ const keys = {};
 addEventListener('keydown', e => {
   if (e.repeat) return;
   keys[e.key.toLowerCase()] = true;
-  if (e.key === 'ArrowUp') { aimUp(4); e.preventDefault(); }
-  if (e.key === 'ArrowDown') { aimUp(-4); e.preventDefault(); }   // tap kick; hold = continuous in draw()
+  if (e.key === 'ArrowUp') { aimUp(3); e.preventDefault(); }
+  if (e.key === 'ArrowDown') { aimUp(-3); e.preventDefault(); }   // tap kick; hold = continuous in draw()
   if (e.key === ' ') { $('fireBtn').click(); e.preventDefault(); }
   if (e.key.toLowerCase() === 'e') send({ t: 'endturn' });
   if ('12345'.includes(e.key)) { const w = WEAPON_LIST[+e.key - 1]; if (w) selectWeapon(w[0]); }
@@ -496,8 +504,8 @@ function draw() {
     camFrame(dt);
     // continuous aiming: joystick held, or arrow keys held (desktop equivalent)
     let rate = joy.held ? joy.rate : 0;
-    if (!joy.held && keys['arrowup']) rate = 45;
-    if (!joy.held && keys['arrowdown']) rate = -45;
+    if (!joy.held && keys['arrowup']) rate = 28;
+    if (!joy.held && keys['arrowdown']) rate = -28;
     if (rate && canActNow) aimStep(rate * dt);
   }
   const dpr = Math.min(devicePixelRatio || 1, 2);
@@ -509,6 +517,32 @@ function draw() {
   // stars
   ctx.fillStyle = 'rgba(255,255,255,.5)';
   for (let i = 0; i < 40; i++) { const x = (i * 173.3 % 1) * cv.width, y = (i * 97.7 % 1) * cv.height * .5; ctx.fillRect(x, y, 1.5, 1.5); }
+  // moon + glow
+  const mx = cv.width * 0.78, my = cv.height * 0.16;
+  const mg = ctx.createRadialGradient(mx, my, 0, mx, my, 70);
+  mg.addColorStop(0, 'rgba(225,235,255,.45)'); mg.addColorStop(1, 'rgba(225,235,255,0)');
+  ctx.fillStyle = mg; ctx.beginPath(); ctx.arc(mx, my, 70, 0, 7); ctx.fill();
+  ctx.fillStyle = '#e8eeff'; ctx.beginPath(); ctx.arc(mx, my, 15, 0, 7); ctx.fill();
+  ctx.fillStyle = 'rgba(190,200,230,.55)';
+  ctx.beginPath(); ctx.arc(mx - 5, my - 3, 3, 0, 7); ctx.arc(mx + 6, my + 5, 4, 0, 7); ctx.arc(mx + 1, my - 7, 2, 0, 7); ctx.fill();
+  // parallax clouds (drift with camera, slow self-drift)
+  ctx.fillStyle = 'rgba(255,255,255,.07)';
+  const drift = performance.now() * 0.006;
+  for (let i = 0; i < 5; i++) {
+    const cw = 150 + i * 45;
+    const span = cv.width + 500;
+    const cx = (((i * 613 + drift - cam.x * 0.15) % span) + span) % span - 250;
+    const cy = cv.height * (0.08 + (i * 37 % 4) * 0.11);
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, cw * 0.5, 15 + i * 3, 0, 0, 7);
+    ctx.ellipse(cx + cw * 0.26, cy - 7, cw * 0.3, 12, 0, 0, 7);
+    ctx.ellipse(cx - cw * 0.3, cy + 4, cw * 0.24, 10, 0, 0, 7);
+    ctx.fill();
+  }
+  // horizon glow above the skyline
+  const hg = ctx.createLinearGradient(0, cv.height * 0.55, 0, cv.height);
+  hg.addColorStop(0, 'rgba(120,160,220,0)'); hg.addColorStop(1, 'rgba(120,160,220,.22)');
+  ctx.fillStyle = hg; ctx.fillRect(0, cv.height * 0.55, cv.width, cv.height * 0.45);
 
   if (!S || !terrain) return;
   const { scale, ox, oy } = worldToScreen();
@@ -523,9 +557,34 @@ function draw() {
   ctx.lineTo(vx1, H + 200);
   ctx.closePath();
   const tg = ctx.createLinearGradient(0, 0, 0, H);
-  tg.addColorStop(0, '#3e7d4f'); tg.addColorStop(0.06, '#2f6340'); tg.addColorStop(0.15, '#6b4a2f'); tg.addColorStop(1, '#3a2a1c');
+  tg.addColorStop(0, '#6b4a2f'); tg.addColorStop(0.55, '#5a3f28'); tg.addColorStop(1, '#3a2a1c');
   ctx.fillStyle = tg; ctx.fill();
-  ctx.strokeStyle = '#57a86a'; ctx.lineWidth = 3; ctx.stroke();
+  // rock/soil strata, clipped to the island silhouette
+  ctx.save();
+  ctx.clip();
+  ctx.fillStyle = 'rgba(0,0,0,.13)';
+  for (let y = 170; y < H; y += 46) ctx.fillRect(vx0, y, vx1 - vx0, 15);
+  ctx.fillStyle = 'rgba(255,225,190,.05)';
+  for (let y = 193; y < H; y += 46) ctx.fillRect(vx0, y, vx1 - vx0, 8);
+  ctx.restore();
+  // grass cap: thick stroke hugging the surface, half above the silhouette
+  ctx.beginPath();
+  ctx.moveTo(vx0, terrain[Math.min(vx0, W - 1)]);
+  for (let x = vx0; x <= vx1; x += 2) ctx.lineTo(x, terrain[Math.min(x, W - 1)]);
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = '#3f8f4f'; ctx.lineWidth = 11; ctx.stroke();
+  ctx.strokeStyle = '#57ac63'; ctx.lineWidth = 6; ctx.stroke();
+  // grass tufts poking above the surface
+  ctx.strokeStyle = '#6bc574'; ctx.lineWidth = 2; ctx.lineCap = 'round';
+  ctx.beginPath();
+  for (let x = vx0 + 6; x <= vx1; x += 13) {
+    const gy = terrain[Math.min(x, W - 1)];
+    const len = 5 + (x * 7919 % 6);
+    ctx.moveTo(x, gy + 3);
+    ctx.lineTo(x + ((x >> 3) & 1 ? 2 : -2), gy - len);
+  }
+  ctx.stroke();
+  ctx.lineCap = 'butt';
 
   // water
   const wy = S.water;
@@ -536,6 +595,10 @@ function draw() {
   ctx.beginPath(); ctx.moveTo(vx0, H + 200);
   for (let x = vx0; x <= vx1; x += 8) ctx.lineTo(x, wy + Math.sin(x / 60 + t * 2) * 3);
   ctx.lineTo(vx1, H + 200); ctx.closePath(); ctx.fill();
+  // crest highlight
+  ctx.beginPath();
+  for (let x = vx0; x <= vx1; x += 8) { const y = wy + Math.sin(x / 60 + t * 2) * 3; x === vx0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y); }
+  ctx.strokeStyle = 'rgba(160,220,255,.45)'; ctx.lineWidth = 2; ctx.stroke();
 
   // trajectory preview: dotted arc using the same physics constants as the server
   if (S.phase === 'aim') {
@@ -591,9 +654,7 @@ function draw() {
       ctx.lineTo(ax + dy * 5, ay - dx * 5);
       ctx.closePath(); ctx.fill();
       ctx.restore();
-      if (isMine) {
-        $('aimHint').textContent = `${Math.round(aim.angle)}° · PWR ${aim.power}`;
-      }
+      // aim readout lives in the status chip (refreshChip)
     }
   }
 
