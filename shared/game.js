@@ -451,7 +451,8 @@ function stepPlayers(m, dt, events) {
       }
     }
     if (!p.alive) continue;
-    if (p.y > m.waterY + 15) kill(m, p, 'drown', events);
+    if (p.hp <= 0) kill(m, p, 'wounds', events);          // covers ALL damage: bleed, shots, blasts, fall
+    else if (p.y > m.waterY + 15) kill(m, p, 'drown', events);
     else if (p.y > H + 60 || p.x < -80 || p.x > W + 80) kill(m, p, 'fell', events);
   }
 }

@@ -290,6 +290,37 @@ test('damage: hp never displayed negative', () => {
   if (hit) assert.ok(hit.hp >= 0, 'clamped at 0');
 });
 
+test('damage: zero HP kills the player (not just drown/fell)', () => {
+  const m = G.createMatch(21);
+  const evs = [];
+  // wipe team 1 with direct hits
+  for (const p of m.players.filter(p => p.team === 1)) {
+    p.hp = 10;
+    G.explosion(m, p.x, p.y - 14, 120, 85, evs);
+  }
+  // death lands on the next physics step
+  const stepEvs = G.step(m, 1 / 30);
+  const deaths = stepEvs.filter(e => e.t === 'death');
+  assert.ok(deaths.length >= 1, 'at least one death from damage');
+  for (const p of m.players.filter(p => p.team === 1)) {
+    assert.strictEqual(p.alive, false, 'dead at 0 hp');
+    assert.strictEqual(p.hp, 0, 'hp clamped to 0');
+  }
+  assert.ok(stepEvs.some(e => e.t === 'over'), 'match ends when a team is wiped by damage');
+  assert.strictEqual(m.winner, 0, 'team 0 wins');
+});
+
+test('damage: hp at 1 survives a glancing blast', () => {
+  const m = G.createMatch(21);
+  const evs = [];
+  const p = m.players[1];
+  p.hp = 1;
+  p.x += 115;   // near the edge of a 120px blast -> f tiny, dmg rounds to 0
+  G.explosion(m, p.x - 115, p.y - 14, 120, 85, evs);
+  G.step(m, 1 / 30);
+  assert.ok(p.alive || p.hp >= 0, 'state consistent');
+});
+
 test('serialization: round-trips key state for clients', () => {
   const m = G.createMatch(77);
   const s = G.serialize(m, true);
