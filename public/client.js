@@ -567,18 +567,25 @@ function draw() {
   ctx.fillStyle = 'rgba(255,225,190,.05)';
   for (let y = 193; y < H; y += 46) ctx.fillRect(vx0, y, vx1 - vx0, 8);
   ctx.restore();
-  // grass cap: thick stroke hugging the surface, half above the silhouette
-  ctx.beginPath();
-  ctx.moveTo(vx0, terrain[Math.min(vx0, W - 1)]);
-  for (let x = vx0; x <= vx1; x += 2) ctx.lineTo(x, terrain[Math.min(x, W - 1)]);
+  // grass cap: only above the waterline (bright green under translucent water looks wrong)
+  const wl = S.water - 2;
   ctx.lineJoin = 'round';
-  ctx.strokeStyle = '#3f8f4f'; ctx.lineWidth = 11; ctx.stroke();
-  ctx.strokeStyle = '#57ac63'; ctx.lineWidth = 6; ctx.stroke();
-  // grass tufts poking above the surface
+  for (const [lw, col] of [[11, '#3f8f4f'], [6, '#57ac63']]) {
+    ctx.beginPath();
+    let on = false;
+    for (let x = vx0; x <= vx1; x += 2) {
+      const y = terrain[Math.min(x, W - 1)];
+      if (y < wl) { on ? ctx.lineTo(x, y) : ctx.moveTo(x, y); on = true; }
+      else on = false;
+    }
+    ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.stroke();
+  }
+  // grass tufts poking above the surface (also above waterline)
   ctx.strokeStyle = '#6bc574'; ctx.lineWidth = 2; ctx.lineCap = 'round';
   ctx.beginPath();
   for (let x = vx0 + 6; x <= vx1; x += 13) {
     const gy = terrain[Math.min(x, W - 1)];
+    if (gy >= wl) continue;
     const len = 5 + (x * 7919 % 6);
     ctx.moveTo(x, gy + 3);
     ctx.lineTo(x + ((x >> 3) & 1 ? 2 : -2), gy - len);
