@@ -23,6 +23,7 @@
     min-width:240px; transition:transform .08s; }
   .btn:active { transform:scale(.96); }
   .btn.secondary { background:#1c2740; color:#cdd6ea; box-shadow:none; border:1px solid #2c3a5c; }
+  .btn.ghost { background:transparent; color:#7f8db0; box-shadow:none; border:1px dashed #2c3a5c; padding:12px 34px; font-size:15px; }
   .btn:disabled { opacity:.45; }
   #joinrow { display:flex; gap:8px; }
   #joinrow input { width:150px; border-radius:14px; border:1px solid #2c3a5c; background:#131b30; color:#fff;
@@ -145,6 +146,7 @@
   <div class="sub">Friends Edition — turn-based island artillery</div>
   <div id="teamimg"><img src="assets/p1.png" alt=""><img src="assets/p2.png" alt=""></div>
   <button class="btn" id="createBtn">CREATE ROOM</button>
+  <button class="btn ghost" id="practiceBtn">PRACTICE VS BOT</button>
   <div id="joinrow">
     <input id="codeInput" maxlength="5" placeholder="CODE" autocomplete="off" autocapitalize="characters">
     <button class="btn secondary" id="joinBtn" style="min-width:110px">JOIN</button>

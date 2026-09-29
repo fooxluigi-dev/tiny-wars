@@ -84,6 +84,50 @@ function rejoinRoom(code, tok, ws) {
 
 function send(obj) { if (this && this.readyState === 1) this.send(JSON.stringify(obj)); }
 
+// ---- practice bot: pure math (ballistic search), zero tokens / no AI service ----
+function simShot(m, src, dst, ang, pw) {
+  const a = ang * Math.PI / 180;
+  const dx = src.facing * Math.cos(a), dy = -Math.sin(a);
+  const v = 200 + pw * (G.PROJ_SPEED_MAX - 200) / 100;
+  let x = src.x + dx * 16, y = (src.y - 20) + dy * 16;
+  let vx = dx * v, vy = dy * v;
+  let best = Infinity;
+  for (let t = 0; t < 8; t += 1 / 60) {          // same physics as game.js
+    vx += m.wind / 60;
+    vy += G.GRAV / 60;
+    x += vx / 60; y += vy / 60;
+    const d = Math.hypot(x - dst.x, y - (dst.y - 14));
+    if (d < best) best = d;
+    if (y >= G.hAt(m, x) || y >= m.waterY || x < -40 || x > G.W + 40) break;
+  }
+  return best;
+}
+
+function botTick(room, m, now) {
+  const bot = room.players.find(p => p.bot);
+  if (!bot || m.phase !== 'aim' || m.activeTeam !== bot.team) { room.botDue = null; return; }
+  if (!room.botDue) { room.botDue = now + 2200; return; }   // let the player see the turn change
+  if (now < room.botDue) return;
+  room.botDue = null;
+  const src = G.activePlayer(m);
+  const foes = m.players.filter(q => q.alive && q.team !== bot.team);
+  if (!src || !foes.length) return;
+  const dst = foes.reduce((a, b) =>
+    Math.hypot(a.x - src.x, a.y - src.y) < Math.hypot(b.x - src.x, b.y - src.y) ? a : b);
+  let best = null;
+  for (let ang = 10; ang <= 85; ang += 5)
+    for (let pw = 35; pw <= 100; pw += 5) {
+      const score = simShot(m, src, dst, ang, pw);
+      if (!best || score < best.score) best = { ang, pw, score };
+    }
+  // deliberately dumb: aim error ±5° / ±8 power so a human can win
+  const ang = Math.max(5, Math.min(89, best.ang + (Math.random() * 10 - 5)));
+  const pw = Math.max(5, Math.min(100, best.pw + (Math.random() * 16 - 8)));
+  const evs = [];
+  G.setAim(m, bot.team, ang, pw);
+  if (!G.fire(m, bot.team, 'bazooka', evs).err && evs.length) broadcast(room, { t: 'event', evs });
+}
+
 function broadcast(room, obj) { for (const p of room.players) send.call(p.ws, obj); }
 
 function roomInfo(room) {
@@ -116,10 +160,11 @@ function tickRoom(room) {
     }
   }
   const evs = G.step(m, 1 / 30);
+  botTick(room, m, Date.now());
   if (evs.length) broadcast(room, { t: 'event', evs });
   broadcast(room, { t: 'state', s: G.serialize(m) });
   // reap dead rooms (match over + both gone, or empty room > 30 min)
-  const anyConn = room.players.some(p => p.connected);
+  const anyConn = room.players.some(p => p.connected && !p.bot);
   if (!anyConn && (m.phase === 'over' || Date.now() - room.created > 30 * 60e3)) {
     clearInterval(room.tick);
     rooms.delete(room.code);
@@ -139,7 +184,7 @@ wss.on('connection', (ws) => {
     if (typeof msg !== 'object' || !msg) return;
     const now = Date.now();
 
-    if (msg.t === 'create' || msg.t === 'join') {
+    if (msg.t === 'create' || msg.t === 'join' || msg.t === 'practice') {
       // explicit action: detach from any auto-rejoined room first
       if (room) {
         if (me) { me.connected = false; me.lastSeen = Date.now(); }
@@ -154,6 +199,18 @@ wss.on('connection', (ws) => {
       me = j.player;
       send.call(ws, { t: 'room', code: room.code, cfg: room.cfg, you: me.team, tok: me.tok,
         players: room.players.map(p => ({ team: p.team, name: p.name, connected: p.connected })), started: false });
+      return;
+    }
+
+    if (msg.t === 'practice') {
+      room = createRoom(msg.opts);
+      me = joinRoom(room.code, ws, msg.name).player;
+      // dummy opponent: no ws (broadcast skips it), random tok so rejoin can't claim the slot
+      room.players.push({ ws: null, team: 1, name: 'BOT', bot: true, connected: true,
+        lastSeen: Date.now(), tok: token() });
+      send.call(ws, { t: 'room', code: room.code, cfg: room.cfg, you: me.team, tok: me.tok,
+        players: room.players.map(p => ({ team: p.team, name: p.name, connected: p.connected })), started: false });
+      startMatch(room, msg.seed);
       return;
     }
 

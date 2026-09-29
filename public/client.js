@@ -157,6 +157,12 @@ $('createBtn').onclick = () => {
   showStatus('Creating…');
 };
 $('joinBtn').onclick = doJoin;
+$('practiceBtn').onclick = () => {
+  sessionStorage.removeItem('tw_room'); sessionStorage.removeItem('tw_tok');
+  myName = localStorage.getItem('tw_name') || myName;
+  send({ t: 'practice', name: myName, opts: { turnTime: +$('optTurn').value, sdRound: +$('optSD').value } });
+  showStatus('Starting practice…');
+};
 $('codeInput').addEventListener('keydown', e => { if (e.key === 'Enter') doJoin(); });
 function doJoin() {
   const code = $('codeInput').value.trim().toUpperCase();

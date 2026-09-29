@@ -421,7 +421,7 @@ function serialize(m, full) {
 }
 
 module.exports = {
-  W, H, WATER0, WEAPONS, TURN_TIME,
+  W, H, WATER0, WEAPONS, TURN_TIME, GRAV, PROJ_SPEED_MAX,
   mulberry32, genTerrain, hAt, createMatch, spawnPlayers,
   fire, setInput, setAim, step, endTurn, explosion, serialize, activePlayer,
 };
