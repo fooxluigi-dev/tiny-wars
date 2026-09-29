@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<title>Tiny Wars — Friends Edition</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body { height:100%; overflow:hidden; background:#0a0e1a; font-family:-apple-system,system-ui,sans-serif;
+    color:#e8ecf5; overscroll-behavior:none; touch-action:none; user-select:none; -webkit-user-select:none; }
+  #game { position:fixed; inset:0; display:flex; flex-direction:column; }
+
+  /* ---------- menu ---------- */
+  #menu { position:fixed; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:14px; background:radial-gradient(ellipse at 50% 30%, #16203a 0%, #0a0e1a 70%); z-index:30; padding:20px; }
+  #menu h1 { font-size:clamp(30px,7vw,54px); letter-spacing:2px; font-weight:800;
+    background:linear-gradient(90deg,#ffb347,#ff6b6b); -webkit-background-clip:text; background-clip:text; color:transparent; }
+  #menu .sub { color:#8a94ad; font-size:14px; margin-bottom:8px; }
+  .btn { border:none; border-radius:14px; padding:16px 34px; font-size:18px; font-weight:700; cursor:pointer;
+    color:#0a0e1a; background:linear-gradient(180deg,#ffd166,#ffb347); box-shadow:0 6px 18px rgba(255,179,71,.35);
+    min-width:240px; transition:transform .08s; }
+  .btn:active { transform:scale(.96); }
+  .btn.secondary { background:#1c2740; color:#cdd6ea; box-shadow:none; border:1px solid #2c3a5c; }
+  .btn:disabled { opacity:.45; }
+  #joinrow { display:flex; gap:8px; }
+  #joinrow input { width:150px; border-radius:14px; border:1px solid #2c3a5c; background:#131b30; color:#fff;
+    font-size:20px; text-align:center; letter-spacing:5px; text-transform:uppercase; padding:14px; outline:none; }
+  #status { min-height:22px; color:#8a94ad; font-size:14px; text-align:center; white-space:pre-wrap; }
+  #status .code { color:#ffd166; font-weight:800; letter-spacing:3px; font-size:22px; }
+  #teamimg { display:flex; gap:26px; margin:6px 0; }
+  #teamimg img { height:110px; filter:drop-shadow(0 6px 14px rgba(0,0,0,.6)); }
+  .opt { display:flex; gap:8px; align-items:center; color:#8a94ad; font-size:13px; }
+  .opt select { background:#131b30; color:#fff; border:1px solid #2c3a5c; border-radius:8px; padding:6px 8px; font-size:13px; }
+
+  /* ---------- HUD ---------- */
+  #hud { display:none; justify-content:space-between; align-items:center; padding:6px 10px; gap:8px;
+    background:rgba(8,11,22,.85); border-bottom:1px solid #1d2740; font-size:13px; z-index:10; min-height:38px; }
+  .wind { display:flex; align-items:center; gap:6px; font-weight:700; min-width:96px; }
+  #windArrow { font-size:17px; transition:transform .3s; display:inline-block; }
+  .wind.right #windArrow { transform:rotate(0deg); } .wind.left #windArrow { transform:rotate(180deg); }
+  #turnInfo { font-weight:700; text-align:center; }
+  #timer { font-variant-numeric:tabular-nums; font-weight:800; font-size:16px; color:#ffd166; }
+  #timer.low { color:#ff5252; animation:pulse .6s infinite alternate; }
+  @keyframes pulse { to { opacity:.4; } }
+  #hpWrap { display:flex; gap:10px; }
+  .teamhp { width:110px; }
+  .teamhp .lbl { font-size:10px; color:#8a94ad; display:flex; justify-content:space-between; }
+  .hpbar { height:7px; background:#232d48; border-radius:4px; overflow:hidden; margin-top:2px; }
+  .hpbar i { display:block; height:100%; border-radius:4px; transition:width .3s; }
+  .t0 .hpbar i { background:linear-gradient(90deg,#4dd2ff,#2196f3); }
+  .t1 .hpbar i { background:linear-gradient(90deg,#ff8a65,#ff5252); }
+
+  #stage { position:relative; flex:1; overflow:hidden; }
+  canvas { position:absolute; inset:0; width:100%; height:100%; display:block; }
+
+  /* ---------- controls ---------- */
+  #controls { display:none; padding:8px 10px calc(8px + env(safe-area-inset-bottom)); gap:8px;
+    background:rgba(8,11,22,.92); border-top:1px solid #1d2740; z-index:10; align-items:stretch; }
+  .pad { display:flex; gap:8px; align-items:center; }
+  .cbtn { border:none; border-radius:12px; background:#1c2740; color:#e8ecf5; font-size:19px; font-weight:700;
+    min-width:58px; min-height:54px; display:flex; align-items:center; justify-content:center; cursor:pointer;
+    border:1px solid #2c3a5c; touch-action:none; }
+  .cbtn:active, .cbtn.on { background:#31436e; }
+  .cbtn.disabled { opacity:.35; pointer-events:none; }
+  #fireBtn { background:linear-gradient(180deg,#ff7043,#e64a19); border:none; font-size:16px; letter-spacing:1px;
+    min-width:92px; box-shadow:0 4px 14px rgba(230,74,25,.4); }
+  #fireBtn:active { transform:scale(.95); }
+  #endBtn { background:#26314f; font-size:12px; min-width:64px; }
+  #weaponRow { display:flex; gap:6px; overflow-x:auto; padding:2px; flex:1; scrollbar-width:none; }
+  #weaponRow::-webkit-scrollbar { display:none; }
+  .wbtn { border-radius:10px; min-width:54px; min-height:54px; font-size:10px; background:#141c33; color:#9fb0d4;
+    border:1px solid #2c3a5c; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px; cursor:pointer; }
+  .wbtn .ico { font-size:20px; }
+  .wbtn.sel { background:#31436e; color:#fff; border-color:#ffd166; }
+  #powerWrap { position:absolute; right:10px; top:8px; display:flex; flex-direction:column; align-items:center; gap:4px;
+    background:rgba(8,11,22,.7); padding:8px 10px; border-radius:12px; border:1px solid #1d2740; z-index:5; }
+  #powerWrap label { font-size:10px; color:#8a94ad; letter-spacing:1px; }
+  #power { writing-mode:vertical-lr; direction:rtl; width:26px; height:150px; accent-color:#ffb347; touch-action:none; }
+  #powerVal { font-size:12px; font-weight:800; color:#ffd166; }
+  #angleBtns { display:flex; flex-direction:column; gap:6px; }
+  #aimHint { position:absolute; left:10px; top:8px; font-size:11px; color:#8a94ad; background:rgba(8,11,22,.7);
+    padding:5px 9px; border-radius:9px; z-index:5; display:none; }
+
+  /* ---------- overlay screens ---------- */
+  .overlay { position:fixed; inset:0; display:none; flex-direction:column; align-items:center; justify-content:center;
+    gap:14px; background:rgba(5,8,16,.9); z-index:40; text-align:center; padding:20px; }
+  .overlay h2 { font-size:clamp(26px,6vw,44px); font-weight:800; }
+  .overlay .win0 { color:#4dd2ff; } .overlay .win1 { color:#ff8a65; }
+  #bigMsg { position:absolute; left:50%; top:34%; transform:translate(-50%,-50%); font-size:clamp(22px,5vw,40px);
+    font-weight:800; text-shadow:0 4px 18px rgba(0,0,0,.8); pointer-events:none; z-index:6; opacity:0;
+    transition:opacity .25s; text-align:center; white-space:pre-line; }
+  #bigMsg.show { opacity:1; }
+  #connBadge { position:absolute; right:10px; top:8px; font-size:11px; padding:4px 9px; border-radius:9px; z-index:7;
+    background:rgba(255,82,82,.15); color:#ff8a8a; border:1px solid rgba(255,82,82,.4); display:none; }
+  @media (min-width:900px) { .cbtn { min-width:66px; min-height:60px; } }
+</style>
+</head>
+<body>
+<div id="game">
+  <div id="hud">
+    <div class="wind" id="windBox"><span id="windArrow">➜</span><span id="windVal">0</span></div>
+    <div id="turnInfo">—</div>
+    <div id="timer">30</div>
+    <div id="hpWrap">
+      <div class="teamhp t0"><div class="lbl"><span id="n0">P1</span><span id="h0">300</span></div><div class="hpbar"><i id="b0" style="width:100%"></i></div></div>
+      <div class="teamhp t1"><div class="lbl"><span id="n1">P2</span><span id="h1">300</span></div><div class="hpbar"><i id="b1" style="width:100%"></i></div></div>
+    </div>
+  </div>
+
+  <div id="stage">
+    <canvas id="cv"></canvas>
+    <div id="bigMsg"></div>
+    <div id="connBadge">⚠ disconnected — reconnecting…</div>
+    <div id="aimHint"></div>
+    <div id="powerWrap">
+      <label>POWER</label>
+      <input id="power" type="range" min="5" max="100" value="60">
+      <div id="powerVal">60</div>
+      <div id="angleBtns">
+        <button class="cbtn" id="angUp" style="min-width:44px;min-height:40px;font-size:15px">▲</button>
+        <button class="cbtn" id="angDn" style="min-width:44px;min-height:40px;font-size:15px">▼</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="controls">
+    <div class="pad">
+      <button class="cbtn" id="leftBtn">◀</button>
+      <button class="cbtn" id="rightBtn">▶</button>
+      <button class="cbtn" id="jumpBtn">⤒</button>
+    </div>
+    <div id="weaponRow"></div>
+    <div class="pad">
+      <button class="cbtn" id="endBtn">END<br>TURN</button>
+      <button class="cbtn" id="fireBtn">🔥 FIRE</button>
+    </div>
+  </div>
+</div>
+
+<!-- menu -->
+<div id="menu">
+  <h1>TINY WARS</h1>
+  <div class="sub">Friends Edition — turn-based island artillery</div>
+  <div id="teamimg"><img src="assets/p1.png" alt=""><img src="assets/p2.png" alt=""></div>
+  <button class="btn" id="createBtn">CREATE ROOM</button>
+  <div id="joinrow">
+    <input id="codeInput" maxlength="5" placeholder="CODE" autocomplete="off" autocapitalize="characters">
+    <button class="btn secondary" id="joinBtn" style="min-width:110px">JOIN</button>
+  </div>
+  <div class="opt">Turn
+    <select id="optTurn"><option>20</option><option selected>30</option><option>45</option></select>
+    s · Sudden death after round
+    <select id="optSD"><option>5</option><option selected>10</option><option>15</option><option>20</option></select>
+  </div>
+  <div id="status"></div>
+</div>
+
+<!-- win overlay -->
+<div class="overlay" id="winScreen">
+  <h2 id="winTitle"></h2>
+  <div id="winSub" style="color:#8a94ad"></div>
+  <button class="btn" id="rematchBtn">REMATCH</button>
+  <button class="btn secondary" id="leaveBtn">BACK TO MENU</button>
+</div>
+
+<script src="client.js"></script>
+</body>
+</html>
