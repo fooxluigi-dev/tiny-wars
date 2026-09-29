@@ -33,16 +33,25 @@ sprites[1].src = 'assets/p2.png';
 function connect(retryDelay = 800) {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   ws = new WebSocket(`${proto}://${location.host}`);
-  ws.onopen = () => { connected = true; $('connBadge').style.display = 'none'; rejoin(); };
+  ws.onopen = () => {
+    connected = true; $('connBadge').style.display = 'none';
+    while (outbox.length) ws.send(JSON.stringify(outbox.shift()));   // flush intents queued pre-open
+    rejoin();
+  };
   ws.onmessage = e => handle(JSON.parse(e.data));
   ws.onclose = () => {
     connected = false;
+    outbox.length = 0;   // stale intents from a dead socket are meaningless
     if (started) $('connBadge').style.display = 'block';
     setTimeout(() => { connect(Math.min(retryDelay * 1.6, 6000)); rejoin(); }, retryDelay);
   };
   ws.onerror = () => ws.close();
 }
-function send(o) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
+const outbox = [];
+function send(o) {
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify(o));
+  else outbox.push(o);          // not open yet (cold start) — flush on open
+}
 
 // after reconnect: get back into the same room
 function rejoin() {
