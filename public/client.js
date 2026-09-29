@@ -3,7 +3,7 @@
 (() => {
 const cv = document.getElementById('cv'), ctx = cv.getContext('2d');
 const $ = id => document.getElementById(id);
-const W = 1600, H = 900;
+const W = 3200, H = 900;   // must match shared/game.js
 
 // ---------- state ----------
 let ws = null, myTeam = -1, roomCode = null, started = false, connected = false;
@@ -76,6 +76,7 @@ function handle(m) {
       for (const p of S.players) p.facing = p.f;
       terrain = new Float64Array(S._terrain);
       started = true;
+      cam.mode = 'follow'; cam.zoomUser = 1.8;    // fresh match: standard framing
       $('menu').style.display = 'none';
       $('winScreen').style.display = 'none';
       $('hud').style.display = 'flex';
@@ -84,6 +85,7 @@ function handle(m) {
       break;
     }
     case 'state': {
+      if (S && S.proj && !S.proj.length && m.s.proj.length && cam.mode !== 'overview') cam.mode = 'follow';
       prev = S; S = m.s; lerpT = 0; window.__S = S;
       for (const p of S.players) p.facing = p.f;   // normalize server field
       if (!terrain && S._terrain) terrain = new Float64Array(S._terrain);
@@ -120,6 +122,7 @@ function onEvent(ev) {
       showMsg(ev.reason === 'drown' ? '🌊 Drowned!' : ev.reason === 'fell' ? '💀 Fell off!' : '☠️ Down!');
       break;
     case 'turn':
+      if (cam.mode === 'manual') cam.mode = 'follow';
       showMsg(ev.team === myTeam ? '🎯 Your turn' : "⏳ Opponent's turn");
       break;
     case 'over':
@@ -219,10 +222,15 @@ function updateHUD() {
     $('n' + t).textContent = nm ? (t === myTeam ? 'YOU' : 'FOE') : '';
   }
   const canAct = mine && S.phase === 'aim' && connected;
+  canActNow = canAct;
   for (const id of ['leftBtn', 'rightBtn', 'jumpBtn', 'fireBtn', 'endBtn'])
     $(id).classList.toggle('disabled', !canAct);
   $('powerWrap').style.display = canAct ? '' : 'none';
   $('aimHint').style.display = canAct ? '' : 'none';
+  $('eqWpn').style.display = started ? '' : 'none';
+  const wl = WEAPON_LIST.find(w => w[0] === weapon) || WEAPON_LIST[0];
+  const wlbl = `${wl[1]} ${wl[2].toUpperCase()}`;
+  if ($('weaponBtn').dataset.lbl !== wlbl) { $('weaponBtn').dataset.lbl = wlbl; $('weaponBtn').textContent = `${wlbl} ▾`; }
 }
 
 // ---------- controls ----------
@@ -244,8 +252,6 @@ function holdBtn(id, onDown, onUp) {
 holdBtn('leftBtn', () => sendInput(-1, false), () => sendInput(0, false));
 holdBtn('rightBtn', () => sendInput(1, false), () => sendInput(0, false));
 holdBtn('jumpBtn', () => sendInput(0, true));
-holdBtn('angUp', () => aimUp(4), null);
-holdBtn('angDn', () => aimUp(-4), null);
 function aimUp(d) {
   aim.angle = Math.max(0, Math.min(90, aim.angle + d));
   sendAim(); updateAimUI();
@@ -253,23 +259,83 @@ function aimUp(d) {
 $('power').addEventListener('input', e => { aim.power = +e.target.value; $('powerVal').textContent = aim.power; sendAim(); });
 function updateAimUI() {
   $('aimHint').textContent = `Angle ${Math.round(aim.angle)}° · Power ${aim.power}`;
+  $('joyVal').textContent = `${Math.round(aim.angle)}°`;
+}
+
+// ---------- aim joystick: vertical drag; rate ∝ displacement; release stops ----------
+const joy = { held: false, ptr: null, rate: 0 };
+const joyEl = $('aimJoy'), knob = $('joyKnob');
+function joyMove(e) {
+  const r = joyEl.getBoundingClientRect();
+  const mid = r.top + r.height / 2;
+  const off = Math.max(-1, Math.min(1, (mid - e.clientY) / (r.height / 2)));  // up = +
+  joy.rate = off * 75;                                    // deg/s at full deflection
+  knob.style.transform = `translateY(${(-off * (r.height / 2 - 26)).toFixed(1)}px)`;
+}
+joyEl.addEventListener('pointerdown', e => {
+  if (!canActNow) return;
+  joy.held = true; joy.ptr = e.pointerId;
+  joyEl.setPointerCapture(e.pointerId);
+  joyMove(e); e.preventDefault();
+});
+joyEl.addEventListener('pointermove', e => { if (joy.held && e.pointerId === joy.ptr) joyMove(e); });
+function joyEnd(e) {
+  if (e.pointerId !== joy.ptr) return;
+  joy.held = false; joy.ptr = null; joy.rate = 0;
+  knob.style.transform = 'translateY(0px)';
+  sendAimThrottled(true);                                 // flush final angle
+}
+joyEl.addEventListener('pointerup', joyEnd);
+joyEl.addEventListener('pointercancel', joyEnd);
+
+let lastAimSend = 0;
+function sendAimThrottled(force) {
+  const n = performance.now();
+  if (force || n - lastAimSend > 100) { lastAimSend = n; sendAim(); }
+}
+function aimStep(delta) {
+  if (!canActNow) return;
+  const a = Math.max(0, Math.min(90, aim.angle + delta));
+  if (a === aim.angle) return;
+  aim.angle = a; sendAimThrottled(); updateAimUI();
 }
 
 $('fireBtn').onclick = () => { send({ t: 'fire', weapon }); sendAim(); };
 $('endBtn').onclick = () => send({ t: 'endturn' });
 
-// weapon row
-const wrow = $('weaponRow');
+// ---------- weapon inventory: one HUD button opens a large touch panel ----------
+let canActNow = false;                 // set by updateHUD each frame
+const wpanel = $('wpanel'), wgrid = $('wgrid'), wreason = $('wreason');
+const wtiles = {};
 for (const [id, ico, label] of WEAPON_LIST) {
-  const b = document.createElement('button');
-  b.className = 'wbtn' + (id === weapon ? ' sel' : '');
-  b.innerHTML = `<span class="ico">${ico}</span>${label}`;
-  b.onclick = () => {
+  const t = document.createElement('button');
+  t.className = 'wtile';
+  t.innerHTML = `<span class="ico">${ico}</span><span>${label}</span><span class="ammo">∞ ammo</span>`;
+  t.onclick = () => {
+    if (!canActNow) { wreason.textContent = '🔒 You can only pick weapons on your turn'; return; }
     weapon = id;
-    for (const c of wrow.children) c.classList.remove('sel');
-    b.classList.add('sel');
+    refreshWeapons();
+    wpanel.classList.remove('open');   // auto-close after selecting
   };
-  wrow.appendChild(b);
+  wgrid.appendChild(t);
+  wtiles[id] = t;
+}
+function refreshWeapons() {
+  const list = WEAPON_LIST.find(w => w[0] === weapon) || WEAPON_LIST[0];
+  $('eqWpn').textContent = `${list[1]} ${list[2]}`;
+  for (const [id] of WEAPON_LIST) {
+    wtiles[id].classList.toggle('sel', id === weapon);
+    wtiles[id].classList.toggle('off', !canActNow);
+  }
+  wreason.textContent = canActNow ? '' : '🔒 Weapons lock while it is not your turn';
+}
+$('weaponBtn').onclick = () => { refreshWeapons(); wpanel.classList.add('open'); };
+$('wclose').onclick = () => wpanel.classList.remove('open');
+
+function selectWeapon(id) {
+  if (!WEAPON_LIST.find(w => w[0] === id)) return;
+  if (!canActNow) return;
+  weapon = id; refreshWeapons();
 }
 
 // keyboard (desktop)
@@ -278,10 +344,10 @@ addEventListener('keydown', e => {
   if (e.repeat) return;
   keys[e.key.toLowerCase()] = true;
   if (e.key === 'ArrowUp') { aimUp(4); e.preventDefault(); }
-  if (e.key === 'ArrowDown') { aimUp(-4); e.preventDefault(); }
+  if (e.key === 'ArrowDown') { aimUp(-4); e.preventDefault(); }   // tap kick; hold = continuous in draw()
   if (e.key === ' ') { $('fireBtn').click(); e.preventDefault(); }
   if (e.key.toLowerCase() === 'e') send({ t: 'endturn' });
-  if ('12345'.includes(e.key)) { const w = WEAPON_LIST[+e.key - 1]; if (w) wrow.children[+e.key - 1].click(); }
+  if ('12345'.includes(e.key)) { const w = WEAPON_LIST[+e.key - 1]; if (w) selectWeapon(w[0]); }
   syncKeys();
 });
 addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; syncKeys(); });
@@ -298,19 +364,108 @@ addEventListener('keydown', e => {
   if (e.key.toLowerCase() === 'q') { aim.power = Math.max(5, aim.power - 5); $('power').value = aim.power; $('powerVal').textContent = aim.power; sendAim(); }
   if (e.key.toLowerCase() === 'r') { aim.power = Math.min(100, aim.power + 5); $('power').value = aim.power; $('powerVal').textContent = aim.power; sendAim(); }
 });
-// tap on canvas to aim toward that point (mobile-friendly)
+// ---------- camera (render-only: never touches physics or server state) ----------
+// mode: follow (auto-track active/projectile) | manual (user dragged) | overview (whole map)
+const cam = { x: W / 2, y: H / 2, zoom: 1.8, zoomUser: 1.8, mode: 'follow' };
+const ZOOM_MIN = 1, ZOOM_MAX = 6;   // 1 = fits whole map, 6 = close-up
+
+function fitScale() {
+  const cw = cv.width, ch = cv.height;
+  return Math.min(cw / W, ch / H);
+}
+function viewSize() {   // visible world size at current zoom
+  const s = fitScale() * (cam.mode === 'overview' ? 1 : cam.zoomUser);
+  return { s, w: cv.width / s, h: cv.height / s };
+}
+function clampCam() {
+  const { w, h } = viewSize();
+  cam.x = w >= W ? W / 2 : Math.max(w / 2, Math.min(W - w / 2, cam.x));
+  cam.y = h >= H ? H / 2 : Math.max(h / 2, Math.min(H - h / 2, cam.y));
+}
+function camTarget() {
+  if (cam.mode === 'overview') return { x: W / 2, y: H / 2 };
+  const { h } = viewSize();
+  if (S && S.proj && S.proj.length) return { x: S.proj[0].x, y: S.proj[0].y - h * 0.06 };
+  if (S && S.act >= 0 && S.players[S.act]) { const p = S.players[S.act]; return { x: p.x, y: p.y - h * 0.15 }; }
+  return null;
+}
+function camFrame(dt) {
+  if (cam.mode !== 'manual') {
+    const t = camTarget();
+    if (t) {
+      const k = Math.min(1, dt * 5);
+      cam.x += (t.x - cam.x) * k;
+      cam.y += (t.y - cam.y) * k;
+    }
+  }
+  clampCam();
+}
+function screenToWorld(sx, sy) {
+  const { s } = viewSize();
+  const ox = cv.width / 2 - cam.x * s, oy = cv.height / 2 - cam.y * s;
+  return { x: (sx - ox) / s, y: (sy - oy) / s };
+}
+function zoomAt(factor, sx, sy) {
+  if (cam.mode === 'overview') { cam.mode = 'manual'; }
+  const before = screenToWorld(sx, sy);
+  cam.zoomUser = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, cam.zoomUser * factor));
+  const { s } = viewSize();
+  cam.x = before.x - (sx - cv.width / 2) / s;
+  cam.y = before.y - (sy - cv.height / 2) / s;
+  clampCam();
+}
+
+// pointer gestures: 1 finger/mouse = pan (manual), 2 = pinch zoom; wheel = zoom
+const ptrs = new Map();
+let drag0 = null, pinch0 = 0, pinchZ0 = 1;
 cv.addEventListener('pointerdown', e => {
-  if (!S || S.phase !== 'aim' || S.team !== myTeam) return;
-  const p = S.players[S.act];
-  if (!p) return;
-  const rect = cv.getBoundingClientRect();
-  const wx = (e.clientX - rect.left) / rect.width * W;
-  const wy = (e.clientY - rect.top) / rect.height * H;
-  const dx = (wx - p.x) * p.facing, dy = (p.y - 16) - wy;
-  if (dx <= 0) return;
-  aim.angle = Math.max(0, Math.min(90, Math.atan2(dy, dx) * 180 / Math.PI));
-  sendAim(); updateAimUI();
+  cv.setPointerCapture(e.pointerId);
+  ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (ptrs.size === 1) drag0 = { x: e.clientX, y: e.clientY, cx: cam.x, cy: cam.y };
+  if (ptrs.size === 2) {
+    const [a, b] = [...ptrs.values()];
+    pinch0 = Math.hypot(a.x - b.x, a.y - b.y) || 1;
+    pinchZ0 = cam.zoomUser;
+    drag0 = null;
+  }
 });
+cv.addEventListener('pointermove', e => {
+  if (!ptrs.has(e.pointerId)) return;
+  ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  const rect = cv.getBoundingClientRect();
+  if (ptrs.size >= 2) {           // pinch: zoom around midpoint
+    const [a, b] = [...ptrs.values()];
+    const d = Math.hypot(a.x - b.x, a.y - b.y) || 1;
+    const mid = { x: (a.x + b.x) / 2 - rect.left, y: (a.y + b.y) / 2 - rect.top };
+    const target = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, pinchZ0 * d / pinch0));
+    zoomAt(target / (cam.mode === 'overview' ? 1 : cam.zoomUser), mid.x, mid.y);
+    return;
+  }
+  if (drag0 && cam.mode !== 'overview') {
+    const dx = e.clientX - drag0.x, dy = e.clientY - drag0.y;
+    if (Math.hypot(dx, dy) > 6) {
+      const { s } = viewSize();
+      cam.mode = 'manual';
+      cam.x = drag0.cx - dx / s;
+      cam.y = drag0.cy - dy / s;
+      clampCam();
+    }
+  }
+});
+function ptrUp(e) {
+  ptrs.delete(e.pointerId);
+  if (ptrs.size === 0) drag0 = null;
+}
+cv.addEventListener('pointerup', ptrUp);
+cv.addEventListener('pointercancel', ptrUp);
+cv.addEventListener('wheel', e => {
+  e.preventDefault();
+  const rect = cv.getBoundingClientRect();
+  zoomAt(e.deltaY < 0 ? 1.12 : 1 / 1.12, e.clientX - rect.left, e.clientY - rect.top);
+}, { passive: false });
+
+$('camFollow').onclick = () => { cam.mode = 'follow'; };
+$('camOverview').onclick = () => { cam.mode = 'overview'; };
 
 // ---------- rendering ----------
 function resize() {
@@ -326,15 +481,25 @@ function lerpSnap() {
 }
 
 function worldToScreen() {
-  const cw = cv.width, ch = cv.height;
-  const scale = Math.min(cw / W, ch / H);
-  let ox = (cw - W * scale) / 2, oy = (ch - H * scale) / 2;
-  if (shakeT > 0) { ox += (Math.random() - .5) * shakeMag * scale; oy += (Math.random() - .5) * shakeMag * scale; }
+  const { s } = viewSize();
+  const scale = s;
+  let ox = cv.width / 2 - cam.x * scale, oy = cv.height / 2 - cam.y * scale;
+  if (shakeT > 0) { ox += (Math.random() - .5) * shakeMag * 2; oy += (Math.random() - .5) * shakeMag * 2; }
   return { scale, ox, oy };
 }
 
 function draw() {
   requestAnimationFrame(draw);
+  const now = performance.now();
+  const dt = Math.min(0.1, (now - (draw.t || now)) / 1000); draw.t = now;
+  if (started) {
+    camFrame(dt);
+    // continuous aiming: joystick held, or arrow keys held (desktop equivalent)
+    let rate = joy.held ? joy.rate : 0;
+    if (!joy.held && keys['arrowup']) rate = 45;
+    if (!joy.held && keys['arrowdown']) rate = -45;
+    if (rate && canActNow) aimStep(rate * dt);
+  }
   const dpr = Math.min(devicePixelRatio || 1, 2);
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   // sky
@@ -349,11 +514,13 @@ function draw() {
   const { scale, ox, oy } = worldToScreen();
   ctx.setTransform(scale, 0, 0, scale, ox, oy);
 
-  // terrain
+  // terrain (cull to visible columns for iPhone perf on the 3200px map)
+  const vx0 = Math.max(0, Math.floor((-ox / scale) / 2) * 2 - 4);
+  const vx1 = Math.min(W, Math.ceil(((cv.width - ox) / scale) / 2) * 2 + 4);
   ctx.beginPath();
-  ctx.moveTo(0, H + 200);
-  for (let x = 0; x < W; x += 2) ctx.lineTo(x, terrain[x]);
-  ctx.lineTo(W, H + 200);
+  ctx.moveTo(vx0, H + 200);
+  for (let x = vx0; x <= vx1; x += 2) ctx.lineTo(x, terrain[Math.min(x, W - 1)]);
+  ctx.lineTo(vx1, H + 200);
   ctx.closePath();
   const tg = ctx.createLinearGradient(0, 0, 0, H);
   tg.addColorStop(0, '#3e7d4f'); tg.addColorStop(0.06, '#2f6340'); tg.addColorStop(0.15, '#6b4a2f'); tg.addColorStop(1, '#3a2a1c');
@@ -366,9 +533,39 @@ function draw() {
   wg.addColorStop(0, 'rgba(40,120,220,.75)'); wg.addColorStop(1, 'rgba(10,30,80,.9)');
   ctx.fillStyle = wg;
   const t = performance.now() / 1000;
-  ctx.beginPath(); ctx.moveTo(0, H + 200);
-  for (let x = 0; x <= W; x += 8) ctx.lineTo(x, wy + Math.sin(x / 60 + t * 2) * 3);
-  ctx.lineTo(W, H + 200); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(vx0, H + 200);
+  for (let x = vx0; x <= vx1; x += 8) ctx.lineTo(x, wy + Math.sin(x / 60 + t * 2) * 3);
+  ctx.lineTo(vx1, H + 200); ctx.closePath(); ctx.fill();
+
+  // trajectory preview: dotted arc using the same physics constants as the server
+  if (S.phase === 'aim') {
+    const p0 = S.players[S.act];
+    const isMine = p0 && p0.a && p0.t === myTeam;
+    if (isMine) {
+      const a = aim.angle * Math.PI / 180;
+      const dx = p0.facing * Math.cos(a), dy = -Math.sin(a);
+      const v = 200 + aim.power * (1400 - 200) / 100;   // matches PROJ_SPEED_MAX
+      let px = p0.x + dx * 16, py = (p0.y - 20) + dy * 16, vx = dx * v, vy = dy * v;
+      ctx.save();
+      ctx.fillStyle = 'rgba(255,214,102,.75)';
+      if (weapon === 'bazooka' || weapon === 'grenade') {   // arc weapons only
+        for (let i = 0; i < 300; i++) {
+          if (S.wind) vx += S.wind / 60;
+          vy += 1000 / 60;
+          px += vx / 60; py += vy / 60;
+          if (i % 9 === 0) ctx.fillRect(px - 2, py - 2, 4, 4);
+          if (py >= (terrain[Math.round(px)] ?? 1e9) || py >= S.water || px < 0 || px > W) break;
+        }
+      } else if (weapon === 'shotgun') {
+        for (let d = 20; d < 560; d += 14) {
+          const qx = p0.x + dx * d, qy = (p0.y - 20) + dy * d;
+          if (qy >= (terrain[Math.round(qx)] ?? 1e9)) break;
+          ctx.fillRect(qx - 2, qy - 2, 4, 4);
+        }
+      }
+      ctx.restore();
+    }
+  }
 
   // aim indicator for active player
   if (S.phase === 'aim') {
@@ -507,10 +704,12 @@ function drawSprite(img, x, y, facing, scale) {
   ctx.restore();
 }
 
+window.__cam = cam;   // E2E hook: camera is render-only state
 // periodic ping keeps proxies from dropping idle sockets
 window.__terrHash = () => { if (!terrain) return null; let h = 0; for (let i = 0; i < terrain.length; i += 7) h = (h * 31 + Math.round(terrain[i])) | 0; return h; };
 setInterval(() => send({ t: 'ping' }), 25000);
 updateAimUI();
+refreshWeapons();
 connect();
 requestAnimationFrame(draw);
 })();

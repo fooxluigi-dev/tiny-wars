@@ -84,47 +84,34 @@ function rejoinRoom(code, tok, ws) {
 
 function send(obj) { if (this && this.readyState === 1) this.send(JSON.stringify(obj)); }
 
-// ---- practice bot: pure math (ballistic search), zero tokens / no AI service ----
-function simShot(m, src, dst, ang, pw) {
-  const a = ang * Math.PI / 180;
-  const dx = src.facing * Math.cos(a), dy = -Math.sin(a);
-  const v = 200 + pw * (G.PROJ_SPEED_MAX - 200) / 100;
-  let x = src.x + dx * 16, y = (src.y - 20) + dy * 16;
-  let vx = dx * v, vy = dy * v;
-  let best = Infinity;
-  for (let t = 0; t < 8; t += 1 / 60) {          // same physics as game.js
-    vx += m.wind / 60;
-    vy += G.GRAV / 60;
-    x += vx / 60; y += vy / 60;
-    const d = Math.hypot(x - dst.x, y - (dst.y - 14));
-    if (d < best) best = d;
-    if (y >= G.hAt(m, x) || y >= m.waterY || x < -40 || x > G.W + 40) break;
-  }
-  return best;
-}
-
+// ---- practice bot: ballistic solver + walks into range, zero tokens / no AI service ----
 function botTick(room, m, now) {
   const bot = room.players.find(p => p.bot);
   if (!bot || m.phase !== 'aim' || m.activeTeam !== bot.team) { room.botDue = null; return; }
-  if (!room.botDue) { room.botDue = now + 2200; return; }   // let the player see the turn change
+  if (!room.botDue) { room.botDue = now + 1600; return; }   // let the player see the turn change
   if (now < room.botDue) return;
-  room.botDue = null;
   const src = G.activePlayer(m);
   const foes = m.players.filter(q => q.alive && q.team !== bot.team);
   if (!src || !foes.length) return;
   const dst = foes.reduce((a, b) =>
     Math.hypot(a.x - src.x, a.y - src.y) < Math.hypot(b.x - src.x, b.y - src.y) ? a : b);
-  let best = null;
-  for (let ang = 10; ang <= 85; ang += 5)
-    for (let pw = 35; pw <= 100; pw += 5) {
-      const score = simShot(m, src, dst, ang, pw);
-      if (!best || score < best.score) best = { ang, pw, score };
-    }
-  // deliberately dumb: aim error ±5° / ±8 power so a human can win
-  const ang = Math.max(5, Math.min(89, best.ang + (Math.random() * 10 - 5)));
-  const pw = Math.max(5, Math.min(100, best.pw + (Math.random() * 16 - 8)));
+  const solve = G.solveShot(m, src, dst);
+  const turnKey = m.round + ':' + m.activeTeam;
+  if (room.botWalkKey !== turnKey) { room.botWalkKey = turnKey; room.botWalks = 0; }
+  if (solve.score > 130 && room.botWalks < 2) {
+    // out of reach: walk toward the enemy (muzzle clears before turn ends)
+    room.botWalks++;
+    G.setInput(m, bot.team, dst.x > src.x ? 1 : -1, false);
+    room.botDue = now + 1600;
+    return;
+  }
+  room.botDue = null;
+  G.setInput(m, bot.team, 0, false);
+  // deliberately dumb: aim error so a human can win
+  const angle = Math.max(5, Math.min(89, solve.angle + (Math.random() * 8 - 4)));
+  const power = Math.max(5, Math.min(100, solve.power + (Math.random() * 12 - 6)));
   const evs = [];
-  G.setAim(m, bot.team, ang, pw);
+  G.setAim(m, bot.team, angle, power);
   if (!G.fire(m, bot.team, 'bazooka', evs).err && evs.length) broadcast(room, { t: 'event', evs });
 }
 

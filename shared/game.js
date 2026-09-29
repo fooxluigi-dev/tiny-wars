@@ -2,13 +2,13 @@
 // ONLY on the server (node). Clients receive snapshots, they never simulate.
 'use strict';
 
-const W = 1600, H = 900;
+const W = 3200, H = 900;       // 2× wider battlefield (2026-09 expansion)
 const WATER0 = 740;            // starting water level (y, grows downward)
 const GRAV = 1000;             // px/s^2
 const WALK = 95;               // px/s
 const JUMP = 370;              // px/s upward
 const TURN_TIME = 30;          // seconds
-const PROJ_SPEED_MAX = 820;    // power 100
+const PROJ_SPEED_MAX = 1400;   // power 100 — flat 45° range ≈ 1960px > 1792px spawn gap
 
 const WEAPONS = {
   bazooka:   { kind: 'rocket',  r: 60,  dmg: 50, wind: true },
@@ -28,19 +28,46 @@ function mulberry32(a) {
 }
 
 // Island terrain: heightmap, one height per column (y grows downward).
+// Varied per seed: layered octaves + plateaus + valleys, with flat spawn shelves.
+function smoothstep(a, b, x) { x = Math.max(0, Math.min(1, (x - a) / (b - a))); return x * x * (3 - 2 * x); }
+
 function genTerrain(seed) {
   const rnd = mulberry32(seed);
   const h = new Float64Array(W);
-  const p1 = rnd() * 6.28, p2 = rnd() * 6.28, p3 = rnd() * 6.28;
-  const f1 = 3 + rnd() * 6, f2 = 8 + rnd() * 10, f3 = 18 + rnd() * 14;
-  const bump = 0.8 + rnd() * 0.5;
+  const oct = [
+    [2 + rnd() * 3, 160 + rnd() * 70],    // broad hills
+    [5 + rnd() * 5, 95 + rnd() * 60],     // medium relief
+    [11 + rnd() * 9, 40 + rnd() * 35],    // rough ground
+    [24 + rnd() * 16, 10 + rnd() * 8],    // detail
+  ].map(([f, a]) => ({ f, a, ph: rnd() * 6.28 }));
+  const feats = [];
+  const nfeat = 3 + (rnd() * 3 | 0);
+  for (let i = 0; i < nfeat; i++) feats.push({
+    x: 0.14 + rnd() * 0.72,               // centre (fraction of W)
+    w: 0.035 + rnd() * 0.105,             // half-width
+    up: rnd() < 0.55,                     // plateau vs valley
+    amt: 70 + rnd() * 70,
+  });
+  const spawns = [W * 0.22, W * 0.78];    // team shelves (see spawnPlayers)
   for (let x = 0; x < W; x++) {
     const t = x / (W - 1);
-    const env = Math.pow(Math.sin(Math.PI * t), 0.6);   // 0 at shores, 1 center
-    const noise = 42 * Math.sin(t * f1 * 6.28 + p1)
-                + 26 * Math.sin(t * f2 * 6.28 + p2)
-                + 12 * Math.sin(t * f3 * 6.28 + p3);
-    h[x] = WATER0 + 70 - env * (150 * bump + noise);
+    const env = Math.pow(Math.sin(Math.PI * t), 0.5);   // 0 at shores, 1 center
+    let rel = 190;
+    for (const o of oct) rel += o.a * Math.sin(t * o.f * 6.28 + o.ph);
+    rel *= 0.62;
+    for (const ft of feats) {
+      const d = Math.abs(t - ft.x) / ft.w;
+      if (d >= 1) continue;
+      const g = ft.up ? 1 - smoothstep(0.55, 1, d) : Math.pow(1 - d * d, 1.6);
+      rel += (ft.up ? 1 : -1) * ft.amt * g;
+    }
+    let y = WATER0 + 60 - env * rel;
+    // spawn shelves: gentle dry ground around both team spawns
+    for (const sx of spawns) {
+      const d = Math.abs(x - sx) / (W * 0.09);
+      if (d < 1) y += ((WATER0 - 120) - y) * Math.pow(1 - d * d, 2);
+    }
+    h[x] = Math.max(120, Math.min(WATER0 + 40, y));
   }
   return h;
 }
@@ -54,7 +81,7 @@ function spawnPlayers(m) {
   const spots = [];
   for (const team of [0, 1]) {
     const dir = team === 0 ? 1 : -1;
-    let x = team === 0 ? Math.round(W * 0.16) : Math.round(W * 0.84);
+    let x = team === 0 ? Math.round(W * 0.22) : Math.round(W * 0.78);  // terrain spawn shelves
     for (let i = 0; i < 3; i++) {
       // scan inward until terrain is dry, above water and not too steep
       let tries = 0;
@@ -63,10 +90,10 @@ function spawnPlayers(m) {
         const steep = Math.abs(hAt(m, x + 10) - hAt(m, x - 10));
         if (isFinite(gh) && gh < WATER0 - 24 && steep < 22) break;
         x += dir * 6;
-        if (x < 90 || x > W - 90) { x = team === 0 ? 200 : W - 200; }
+        if (x < 90 || x > W - 90) { x = team === 0 ? Math.round(W * 0.22) : Math.round(W * 0.78); }
       }
       spots.push({ team, x, y: hAt(m, x) });
-      x += dir * 70;
+      x += dir * 90;
     }
   }
   return spots.map((s, i) => ({
@@ -110,6 +137,40 @@ function rollWind(m) {
 
 function teamList(m, team) {
   return m.players.filter(p => p.team === team);
+}
+
+// Ballistic solver: coarse grid + local refine. env = {terrain, wind, waterY}.
+function trajMiss(env, src, dst, ang, pw) {
+  const a = ang * Math.PI / 180;
+  const dx = src.facing * Math.cos(a), dy = -Math.sin(a);
+  const v = 200 + pw * (PROJ_SPEED_MAX - 200) / 100;
+  let x = src.x + dx * 16, y = (src.y - 20) + dy * 16;
+  let vx = dx * v, vy = dy * v;
+  let best = Infinity;
+  for (let t = 0; t < 8; t += 1 / 60) {
+    vx += env.wind / 60;
+    vy += GRAV / 60;
+    x += vx / 60; y += vy / 60;
+    const d = Math.hypot(x - dst.x, y - (dst.y - 14));
+    if (d < best) best = d;
+    if (y >= hAt(env, x) || y >= env.waterY || x < -40 || x > W + 40) break;
+  }
+  return best;
+}
+
+function solveShot(env, src, dst) {
+  let best = { angle: 45, power: 70, score: Infinity };
+  for (let ang = 10; ang <= 85; ang += 5)
+    for (let pw = 35; pw <= 100; pw += 5) {
+      const s = trajMiss(env, src, dst, ang, pw);
+      if (s < best.score) best = { angle: ang, power: pw, score: s };
+    }
+  for (let ang = Math.max(5, best.angle - 4); ang <= Math.min(89, best.angle + 4); ang += 0.5)
+    for (let pw = Math.max(5, best.power - 5); pw <= Math.min(100, best.power + 5); pw += 0.5) {
+      const s = trajMiss(env, src, dst, ang, pw);
+      if (s < best.score) best = { angle: ang, power: pw, score: s };
+    }
+  return best;
 }
 
 function activePlayer(m) {
@@ -316,14 +377,22 @@ function stepProjectiles(m, dt, events) {
           explosion(m, pr.x, Math.min(pr.y, hAt(m, pr.x)), pr.r, pr.dmg, events);
           continue;
         }
-        if (hitTerrain && !inWater) {
+        if (inWater) {   // splash: grenade explodes at the surface like the rocket does
+          m.projectiles.splice(i, 1);
+          explosion(m, pr.x, Math.min(m.waterY, hAt(m, pr.x)), pr.r, pr.dmg, events);
+          continue;
+        }
+        if (hitTerrain) {
           const gh = hAt(m, pr.x);
           pr.y = gh - 1;
           pr.vy = -pr.vy * 0.38;
           pr.vx = pr.vx * 0.6 + m.wind * 0.01;
           if (Math.abs(pr.vy) < 55 && Math.abs(pr.vx) < 45) { pr.vy = 0; pr.vx = 0; pr.settled = true; }
         }
-        if (pr.x < -60 || pr.x > W + 60 || pr.y > H + 200) m.projectiles.splice(i, 1);
+        if (pr.x < -60 || pr.x > W + 60 || pr.y > H + 200) {   // never vanish silently
+          m.projectiles.splice(i, 1);
+          explosion(m, Math.max(20, Math.min(W - 20, pr.x)), Math.min(pr.y, m.waterY), pr.r, pr.dmg, events);
+        }
         continue;
       }
 
@@ -423,5 +492,5 @@ function serialize(m, full) {
 module.exports = {
   W, H, WATER0, WEAPONS, TURN_TIME, GRAV, PROJ_SPEED_MAX,
   mulberry32, genTerrain, hAt, createMatch, spawnPlayers,
-  fire, setInput, setAim, step, endTurn, explosion, serialize, activePlayer,
+  fire, setInput, setAim, step, endTurn, explosion, serialize, activePlayer, solveShot,
 };

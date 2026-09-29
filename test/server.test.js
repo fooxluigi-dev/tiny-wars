@@ -10,6 +10,7 @@ const { WebSocket } = require('ws');
 process.env.PORT = 0;
 let srv, port, base;
 const REAL = require('../server.js');
+const G = require('../shared/game');
 
 function wsUrl() { return `ws://127.0.0.1:${port}`; }
 
@@ -61,7 +62,7 @@ test('room: create → code issued, join → both present, match auto-starts', a
 
   const startA = await waitFor(a, m => m.t === 'start');
   assert.strictEqual(startA.state.players.length, 6, 'both clients get the same 6-player state');
-  assert.strictEqual(startA.state._terrain.length, 1600, 'full terrain included at start');
+  assert.strictEqual(startA.state._terrain.length, G.W, 'full terrain included at start');
   const startB = await waitFor(b, m => m.t === 'start');
   assert.deepStrictEqual(startB.state._terrain, startA.state._terrain, 'identical terrain both sides');
   assert.deepStrictEqual(startB.state.players, startA.state.players, 'identical spawns both sides');
@@ -157,7 +158,7 @@ test('reconnect: token rejoin restores state after socket drop', async () => {
   const resume = await waitFor(a2, m => m.t === 'start');
   assert.ok(resume.resume, 'full state resent on resume');
   assert.strictEqual(resume.state.players.length, 6);
-  assert.strictEqual(resume.state._terrain.length, 1600);
+  assert.strictEqual(resume.state._terrain.length, G.W);
   // a2 can play again once it's their turn
   a2.close(); b.close();
 });
@@ -197,28 +198,60 @@ test('match: full scripted match reaches game over with a winner', async () => {
   send(a, { t: 'create', name: 'A', opts: { turnTime: 10, sdRound: 3 } });
   const r = await waitFor(a, m => m.t === 'room');
   send(b, { t: 'join', code: r.code, name: 'B' });
-  await waitFor(a, m => m.t === 'start');
+  const sa = await waitFor(a, m => m.t === 'start');
   await waitFor(b, m => m.t === 'start');
+  const env = { terrain: Float64Array.from(sa.state._terrain), wind: 0, waterY: 740 };
 
-  // simple bot loop: fire a bazooka every time OUR team holds the aim phase.
-  // loop until either socket sees the 'over' event.
-  const deadline = Date.now() + 60000;
-  let over = null;
+  // solver-driven loop: walk into range when needed, otherwise aim + fire,
+  // until either socket sees the 'over' event.
+  const deadline = Date.now() + 90000;
+  let over = null, lastWalkKey = '', walksThisTurn = 0;
+  const all = () => a.inbox.concat(b.inbox);
   while (!over && Date.now() < deadline) {
-    const seen = a.inbox.concat(b.inbox).find(m => m.t === 'event' && m.evs.some(e => e.t === 'over'));
+    const msgs = all();
+    const seen = msgs.find(m => m.t === 'event' && m.evs.some(e => e.t === 'over'));
     if (seen) { over = seen; break; }
-    const last = a.inbox.concat(b.inbox).reverse().find(m => m.t === 'state');
+    // keep solver terrain fresh: apply every crater the server broadcast (mirrors the client)
+    for (const msg of msgs) {
+      if (msg.t !== 'event') continue;
+      for (const ev of msg.evs) {
+        if (ev.t !== 'crater' || ev.done) continue;
+        for (let i = 0; i < ev.h.length; i++) env.terrain[ev.from + i] = ev.h[i];
+        ev.done = true;   // idempotent across the shared inbox
+      }
+    }
+    const last = msgs.reverse().find(m => m.t === 'state');
     if (last && last.s.phase === 'aim') {
-      const holder = last.s.team === 0 ? a : b;
-      send(holder, { t: 'aim', angle: 30 + (Date.now() % 50), power: 85 });
-      send(holder, { t: 'fire', weapon: 'bazooka' });
-      // let the shot resolve before polling again
-      await new Promise(res => setTimeout(res, 400));
+      const s = last.s;
+      env.wind = s.wind; env.waterY = s.water;
+      const srcP = s.players[s.act];
+      const foes = s.players.filter(p => p.t !== s.team && p.a);
+      if (srcP && foes.length) {
+        const dst = foes.reduce((x, y) =>
+          Math.hypot(y.x - srcP.x, y.y - srcP.y) < Math.hypot(x.x - srcP.x, x.y - srcP.y) ? y : x);
+        const solve = G.solveShot(env,
+          { x: srcP.x, y: srcP.y, facing: srcP.f },
+          { x: dst.x, y: dst.y });
+        const holder = s.team === 0 ? a : b;
+        const turnKey = s.round + ':' + s.team;
+        if (turnKey !== lastWalkKey) { lastWalkKey = turnKey; walksThisTurn = 0; }
+        if (solve.score > 100 && walksThisTurn < 2) {
+          // out of reach: march toward the enemy (max 2 walks, then fire regardless)
+          walksThisTurn++;
+          send(holder, { t: 'input', move: dst.x > srcP.x ? 1 : -1 });
+          await new Promise(res => setTimeout(res, 700));
+          send(holder, { t: 'input', move: 0 });
+        } else {
+          send(holder, { t: 'aim', angle: solve.angle, power: solve.power });
+          send(holder, { t: 'fire', weapon: 'bazooka' });
+          await new Promise(res => setTimeout(res, 400));
+        }
+      }
     } else {
       await new Promise(res => setTimeout(res, 200));
     }
   }
-  assert.ok(over, 'match reached game over within 60s');
+  assert.ok(over, 'match reached game over within 90s');
   const winner = over.evs.find(e => e.t === 'over').winner;
   assert.ok(winner === 0 || winner === 1, `valid winner: ${winner}`);
   a.close(); b.close();

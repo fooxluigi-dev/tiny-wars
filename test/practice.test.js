@@ -42,9 +42,21 @@ test('practice: solo room starts immediately against BOT, bot fires on its turn'
   // burn the human turn; bot should then act on its own within ~2.2s + flight
   send(a, { t: 'endturn' });
   const turn1 = await waitFor(a, m => m.t === 'event' && m.evs.some(e => e.t === 'turn' && e.team === 1));
-  const boom = await waitFor(a, m => m.t === 'event' && m.evs.some(e => e.t === 'boom'), 8000);
+  // bot may spend its first turn(s) walking into range on the wide map, then fires
+  let boom = null, guard = 0;
+  while (!boom && guard++ < 6) {
+    try {
+      boom = await waitFor(a, m => m.t === 'event' && m.evs.some(e => e.t === 'boom'), 20000);
+    } catch (e) {
+      // no boom yet: hand the turn back so the bot can keep walking
+      const backNow = a.inbox.find(m => m.t === 'event' && m.evs.some(ev => ev.t === 'turn' && ev.team === 0));
+      if (!backNow) throw e;
+      a.inbox.length = 0;
+      send(a, { t: 'endturn' });
+    }
+  }
   assert.ok(boom, 'bot fired a real projectile');
-  const back = await waitFor(a, m => m.t === 'event' && m.evs.some(e => e.t === 'turn' && e.team === 0), 8000);
+  const back = await waitFor(a, m => m.t === 'event' && m.evs.some(e => e.t === 'turn' && e.team === 0), 20000);
   assert.ok(back, 'turn returns to human after bot shot');
   a.close();
 });

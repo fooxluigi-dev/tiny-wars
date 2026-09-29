@@ -181,6 +181,8 @@ test('weapons: bazooka explodes on terrain and damages a nearby player', () => {
 test('weapons: shotgun is hitscan — instant hit, no projectile, no crater', () => {
   const m = G.createMatch(21);
   const shooter = m.players[0], victim = m.players[3];
+  // clear the lane: teammates (spawned 90px apart) would block the ray first
+  m.players[1].x = shooter.x - 300; m.players[2].x = shooter.x - 360;
   // flatten ground between them so the ray can't be blocked by a hill
   for (let x = shooter.x; x <= shooter.x + 180; x++) m.terrain[Math.round(x)] = shooter.y;
   victim.x = shooter.x + 150; victim.y = shooter.y; victim.onGround = true;

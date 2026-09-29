@@ -54,7 +54,39 @@
   .t1 .hpbar i { background:linear-gradient(90deg,#ff8a65,#ff5252); }
 
   #stage { position:relative; flex:1; overflow:hidden; }
-  canvas { position:absolute; inset:0; width:100%; height:100%; display:block; }
+  canvas { position:absolute; inset:0; width:100%; height:100%; display:block; touch-action:none; }
+
+  /* ---------- camera controls ---------- */
+  #camBtns { position:absolute; left:50%; top:6px; transform:translateX(-50%); display:flex; gap:6px; z-index:6; }
+  #camBtns .cbtn { min-width:44px; min-height:38px; font-size:16px; background:rgba(8,11,22,.7); }
+
+  /* ---------- aim joystick ---------- */
+  #aimJoy { position:absolute; left:12px; bottom:10px; width:58px; height:150px;
+    background:rgba(8,11,22,.62); border:1px solid #2c3a5c; border-radius:29px; z-index:6;
+    touch-action:none; display:flex; align-items:center; justify-content:center; }
+  #joyKnob { width:46px; height:46px; border-radius:50%; background:linear-gradient(180deg,#ffd166,#ffb347);
+    box-shadow:0 3px 10px rgba(0,0,0,.5); pointer-events:none; }
+  #joyVal { position:absolute; bottom:-20px; left:50%; transform:translateX(-50%); font-size:11px;
+    color:#ffd166; font-weight:800; }
+
+  /* ---------- weapon inventory ---------- */
+  #wpanel { position:absolute; inset:0; display:none; flex-direction:column; z-index:20;
+    background:rgba(5,8,16,.94); padding:calc(8px + env(safe-area-inset-top)) 14px calc(8px + env(safe-area-inset-bottom)); }
+  #wpanel.open { display:flex; }
+  .wph { display:flex; justify-content:space-between; align-items:center; font-weight:800;
+    letter-spacing:2px; color:#ffd166; font-size:15px; margin-bottom:8px; }
+  #wclose { background:#1c2740; color:#e8ecf5; border:1px solid #2c3a5c; border-radius:10px;
+    width:40px; height:36px; font-size:16px; font-weight:700; }
+  #wgrid { flex:1; overflow-y:auto; -webkit-overflow-scrolling:touch; display:grid; gap:8px;
+    grid-template-columns:repeat(auto-fit, minmax(130px, 1fr)); align-content:start; touch-action:pan-y; }
+  .wtile { background:#141c33; border:1px solid #2c3a5c; border-radius:14px; padding:12px 8px;
+    display:flex; flex-direction:column; align-items:center; gap:4px; color:#e8ecf5; min-height:84px;
+    font-size:13px; font-weight:700; cursor:pointer; }
+  .wtile .ico { font-size:30px; }
+  .wtile .ammo { font-size:11px; color:#7f8db0; }
+  .wtile.sel { background:#31436e; border-color:#ffd166; }
+  .wtile.off { opacity:.4; }
+  #wreason { font-size:12px; color:#ff9d7a; text-align:center; padding-top:8px; min-height:18px; }
 
   /* ---------- controls ---------- */
   #controls { display:none; padding:8px 10px calc(8px + env(safe-area-inset-bottom)); gap:8px;
@@ -80,9 +112,10 @@
   #powerWrap label { font-size:10px; color:#8a94ad; letter-spacing:1px; }
   #power { writing-mode:vertical-lr; direction:rtl; width:26px; height:150px; accent-color:#ffb347; touch-action:none; }
   #powerVal { font-size:12px; font-weight:800; color:#ffd166; }
-  #angleBtns { display:flex; flex-direction:column; gap:6px; }
   #aimHint { position:absolute; left:10px; top:8px; font-size:11px; color:#8a94ad; background:rgba(8,11,22,.7);
     padding:5px 9px; border-radius:9px; z-index:5; display:none; }
+  #eqWpn { position:absolute; left:10px; top:36px; font-size:12px; font-weight:800; color:#ffd166;
+    background:rgba(8,11,22,.7); padding:5px 10px; border-radius:9px; z-index:5; display:none; }
 
   /* ---------- overlay screens ---------- */
   .overlay { position:fixed; inset:0; display:none; flex-direction:column; align-items:center; justify-content:center;
@@ -115,14 +148,24 @@
     <div id="bigMsg"></div>
     <div id="connBadge">⚠ disconnected — reconnecting…</div>
     <div id="aimHint"></div>
+    <div id="eqWpn">🚀 Bazooka</div>
+    <div id="camBtns">
+      <button class="cbtn" id="camFollow" title="Centre on my soldier">⌖</button>
+      <button class="cbtn" id="camOverview" title="Whole battlefield">🗺</button>
+    </div>
+    <div id="aimJoy" title="Drag up/down to aim">
+      <div id="joyKnob"></div>
+      <div id="joyVal">45°</div>
+    </div>
+    <div id="wpanel">
+      <div class="wph"><span>WEAPONS</span><button id="wclose">✕</button></div>
+      <div id="wgrid"></div>
+      <div id="wreason"></div>
+    </div>
     <div id="powerWrap">
       <label>POWER</label>
       <input id="power" type="range" min="5" max="100" value="60">
       <div id="powerVal">60</div>
-      <div id="angleBtns">
-        <button class="cbtn" id="angUp" style="min-width:44px;min-height:40px;font-size:15px">▲</button>
-        <button class="cbtn" id="angDn" style="min-width:44px;min-height:40px;font-size:15px">▼</button>
-      </div>
     </div>
   </div>
 
@@ -132,7 +175,7 @@
       <button class="cbtn" id="rightBtn">▶</button>
       <button class="cbtn" id="jumpBtn">⤒</button>
     </div>
-    <div id="weaponRow"></div>
+    <button id="weaponBtn" class="cbtn" style="flex:1;min-width:110px;font-size:14px;gap:4px">🚀 WEAPONS</button>
     <div class="pad">
       <button class="cbtn" id="endBtn">END<br>TURN</button>
       <button class="cbtn" id="fireBtn">🔥 FIRE</button>
