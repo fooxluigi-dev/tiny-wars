@@ -13,6 +13,66 @@ let terrain = null;         // Float64Array(W) — server is authority, we mirro
 let pendingCraters = [];
 let booms = [];             // visual explosion effects
 let particles = [];
+let floaters = [];           // rising damage numbers
+let projBorn = 0;            // client-side projectile age (no server field)
+let trail = [];              // projectile smoke trail
+let muted = localStorage.getItem('tw_mute') === '1';
+
+// ---------- sound: synthesized WebAudio, zero asset files ----------
+let actx = null, noiseBuf = null;
+function initAudio() {
+  if (actx) return;
+  try {
+    actx = new (window.AudioContext || window.webkitAudioContext)();
+    const n = Math.floor(actx.sampleRate * 0.5);
+    noiseBuf = actx.createBuffer(1, n, actx.sampleRate);
+    const d = noiseBuf.getChannelData(0);
+    for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
+    actx.resume();
+  } catch (e) { actx = null; }
+}
+function audioGesture() {   // iOS: create/resume inside a gesture (tap = pointerdown + click)
+  if (!actx) initAudio();
+  else if (actx.state === 'suspended') actx.resume();
+}
+document.addEventListener('pointerdown', audioGesture, true);
+document.addEventListener('click', audioGesture, true);
+
+function sfx(kind) {
+  if (muted) return;
+  if (!actx) initAudio();          // may start suspended; gesture listener resumes it
+  if (!actx) return;
+  try {
+    if (actx.state === 'suspended') actx.resume();
+    const tone = (type, f0, f1, dur, vol, delay = 0) => {
+      const t0 = actx.currentTime + delay;
+      const o = actx.createOscillator(), g = actx.createGain();
+      o.type = type; o.frequency.setValueAtTime(f0, t0);
+      o.frequency.exponentialRampToValueAtTime(Math.max(20, f1), t0 + dur);
+      g.gain.setValueAtTime(vol, t0);
+      g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+      o.connect(g).connect(actx.destination); o.start(t0); o.stop(t0 + dur);
+    };
+    const noise = (dur, vol, type, f) => {
+      const t0 = actx.currentTime;
+      const s = actx.createBufferSource(); s.buffer = noiseBuf;
+      const flt = actx.createBiquadFilter(); flt.type = type; flt.frequency.value = f;
+      const g = actx.createGain();
+      g.gain.setValueAtTime(vol, t0);
+      g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+      s.connect(flt).connect(g).connect(actx.destination); s.start(t0); s.stop(t0 + dur);
+    };
+    switch (kind) {
+      case 'fire':   noise(0.28, 0.5, 'bandpass', 900); tone('sine', 300, 60, 0.3, 0.4); break;
+      case 'boom':   noise(0.5, 0.6, 'lowpass', 500); tone('sine', 110, 35, 0.5, 0.6); break;
+      case 'splash': noise(0.35, 0.4, 'highpass', 1400); tone('sine', 250, 90, 0.2, 0.15); break;
+      case 'turn':   tone('sine', 660, 660, 0.12, 0.25); tone('sine', 880, 880, 0.15, 0.25, 0.09); break;
+      case 'death':  tone('sawtooth', 220, 70, 0.45, 0.3); break;
+      case 'win':    [523, 659, 784].forEach((f, i) => tone('square', f, f, 0.18, 0.18, i * 0.12)); break;
+      case 'lose':   [330, 262].forEach((f, i) => tone('square', f, f, 0.25, 0.15, i * 0.16)); break;
+    }
+  } catch (e) {}
+}
 let weapon = 'bazooka';
 let aim = { angle: 45, power: 60 };
 let shakeT = 0, shakeMag = 0;
@@ -85,7 +145,11 @@ function handle(m) {
       break;
     }
     case 'state': {
-      if (S && S.proj && !S.proj.length && m.s.proj.length && cam.mode !== 'overview') cam.mode = 'follow';
+      if (S && S.proj && !S.proj.length && m.s.proj.length) {
+        if (cam.mode !== 'overview') cam.mode = 'follow';
+        sfx('fire');
+        projBorn = performance.now();
+      }
       prev = S; S = m.s; lerpT = 0; window.__S = S;
       for (const p of S.players) p.facing = p.f;   // normalize server field
       if (!terrain && S._terrain) terrain = new Float64Array(S._terrain);
@@ -109,23 +173,37 @@ function onEvent(ev) {
       for (let i = 0; i < ev.h.length; i++) terrain[ev.from + i] = ev.h[i];
       break;
     }
-    case 'boom':
+    case 'boom': {
+      const wet = S && ev.y >= S.water - 4;
       booms.push({ x: ev.x, y: ev.y, r: ev.r, t: 0 });
       shakeT = 0.35; shakeMag = Math.min(14, ev.r / 6);
-      spawnParticles(ev.x, ev.y, ev.r);
+      spawnParticles(ev.x, ev.y, ev.r, wet);
+      sfx(wet ? 'splash' : 'boom');
       break;
+    }
     case 'hit':
-      if (S) { const p = S.players[ev.p]; if (p) flashPlayer(ev.p); }
+      if (S) {
+        const p = S.players[ev.p];
+        if (p) {
+          flashPlayer(ev.p);
+          const dmg = p.hp - ev.hp;          // S still holds pre-hit hp (state arrives after event)
+          if (dmg > 0) floaters.push({ x: p.x, y: p.y - 70, txt: '-' + dmg, t: 0 });
+        }
+      }
       break;
     case 'death':
       deathFx[ev.p] = performance.now();
+      if (S && S.players[ev.p]) spawnPuff(S.players[ev.p].x, S.players[ev.p].y - 30);
+      sfx('death');
       showMsg(ev.reason === 'drown' ? '🌊 Drowned!' : ev.reason === 'fell' ? '💀 Fell off!' : '☠️ Down!');
       break;
     case 'turn':
       if (cam.mode === 'manual') cam.mode = 'follow';
+      if (ev.team === myTeam) sfx('turn');
       showMsg(ev.team === myTeam ? '🎯 Your turn' : "⏳ Opponent's turn");
       break;
     case 'over':
+      sfx(ev.winner === myTeam ? 'win' : 'lose');
       showWin(ev.winner);
       break;
   }
@@ -134,11 +212,20 @@ function onEvent(ev) {
 const flashes = {};
 function flashPlayer(i) { flashes[i] = performance.now(); }
 
-function spawnParticles(x, y, r) {
-  for (let i = 0; i < 22; i++) {
+function spawnParticles(x, y, r, wet) {
+  const n = wet ? 14 : 22;
+  for (let i = 0; i < n; i++) {
     const a = Math.random() * Math.PI * 2, v = 60 + Math.random() * r * 3;
     particles.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v - 80, t: 0, life: 0.5 + Math.random() * 0.5,
-      c: Math.random() < 0.5 ? '#ffb347' : '#ff5252' });
+      c: wet ? (Math.random() < 0.5 ? '#9fd4ff' : '#4a9fe0')
+             : (Math.random() < 0.5 ? '#ffb347' : '#ff5252') });
+  }
+}
+function spawnPuff(x, y) {   // grey smoke cloud on death
+  for (let i = 0; i < 14; i++) {
+    const a = Math.random() * Math.PI * 2, v = 30 + Math.random() * 70;
+    particles.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v - 40, t: 0, life: 0.7 + Math.random() * 0.5,
+      c: Math.random() < 0.5 ? '#cfd6e4' : '#8a94ad' });
   }
 }
 
@@ -474,6 +561,13 @@ cv.addEventListener('wheel', e => {
 
 $('camFollow').onclick = () => { cam.mode = 'follow'; };
 $('camOverview').onclick = () => { cam.mode = 'overview'; };
+$('muteBtn').onclick = () => {
+  muted = !muted;
+  localStorage.setItem('tw_mute', muted ? '1' : '0');
+  $('muteBtn').textContent = muted ? '🔇' : '🔊';
+  if (!muted) { initAudio(); sfx('turn'); }
+};
+$('muteBtn').textContent = muted ? '🔇' : '🔊';
 
 // ---------- rendering ----------
 function resize() {
@@ -668,8 +762,28 @@ function draw() {
   // players
   for (const p of S.players) drawPlayer(p);
 
-  // projectiles
+  // projectile smoke trail
+  for (const pr of S.proj) trail.push({ x: pr.x, y: pr.y, t: 0 });
+  while (trail.length > 90) trail.shift();
+  for (let i = trail.length - 1; i >= 0; i--) {
+    const q = trail[i]; q.t += 0.016;
+    if (q.t > 0.45) { trail.splice(i, 1); continue; }
+    ctx.globalAlpha = 0.35 * (1 - q.t / 0.45);
+    ctx.fillStyle = '#cfd6e4';
+    ctx.beginPath(); ctx.arc(q.x, q.y, 3 + q.t * 8, 0, 7); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  // projectiles + muzzle flash ring
   for (const pr of S.proj) {
+    const age = (performance.now() - projBorn) / 1000;
+    if (age < 0.1) {              // young projectile: brief flash at its position
+      ctx.globalAlpha = 1 - age * 10;
+      const fg = ctx.createRadialGradient(pr.x, pr.y, 0, pr.x, pr.y, 26);
+      fg.addColorStop(0, '#fff3c4'); fg.addColorStop(1, 'rgba(255,160,60,0)');
+      ctx.fillStyle = fg; ctx.beginPath(); ctx.arc(pr.x, pr.y, 26, 0, 7); ctx.fill();
+      ctx.globalAlpha = 1;
+    }
     ctx.save();
     ctx.fillStyle = pr.k === 'mine' ? '#d84315' : pr.k === 'bomb' ? '#37474f' : '#263238';
     ctx.beginPath();
@@ -701,6 +815,19 @@ function draw() {
     ctx.globalAlpha = 1 - pt.t / pt.life;
     ctx.fillStyle = pt.c;
     ctx.fillRect(pt.x - 2, pt.y - 2, 4, 4);
+    ctx.globalAlpha = 1;
+  }
+
+  // rising damage numbers
+  for (let i = floaters.length - 1; i >= 0; i--) {
+    const f = floaters[i]; f.t += 0.016;
+    if (f.t > 0.9) { floaters.splice(i, 1); continue; }
+    ctx.globalAlpha = 1 - f.t / 0.9;
+    ctx.font = 'bold 18px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillStyle = '#ff5252';
+    ctx.strokeStyle = 'rgba(0,0,0,.7)'; ctx.lineWidth = 3;
+    ctx.strokeText(f.txt, f.x, f.y - f.t * 46);
+    ctx.fillText(f.txt, f.x, f.y - f.t * 46);
     ctx.globalAlpha = 1;
   }
 
@@ -778,6 +905,8 @@ window.__terrHash = () => { if (!terrain) return null; let h = 0; for (let i = 0
 setInterval(() => send({ t: 'ping' }), 25000);
 updateAimUI();
 refreshWeapons();
+window.__dbg = { get sfx() { return sfx; }, get actx() { return actx; }, get floaters() { return floaters; },
+  get trail() { return trail; }, get muted() { return muted; } };   // E2E hook
 connect();
 requestAnimationFrame(draw);
 })();
