@@ -385,8 +385,8 @@ function stickUp(e) {
   fjoy.style.display = 'none';
   sendAimThrottled(true);                                 // flush final angle
   if (!canActNow) return;
-  if (dy < -60 && dt < 250) sendInput(0, true);           // fast up-flick = jump (no shot)
-  else sendFire();                                        // release = fire
+  const wasTap = Math.hypot(e.clientX - joy.x0, dy) < TAP_PX && dt < TAP_MS;
+  if (wasTap || (dy < -60 && dt < 250)) sendInput(0, true);   // quick tap or up-flick = jump
 }
 
 let powDrag = null;   // {ptr, y0, p0}
@@ -408,11 +408,9 @@ function powerMove(e) {
   placePowTip(e);
 }
 function powerUp(e) {
-  const wasTap = Math.hypot(e.clientX - powDrag.x0, e.clientY - powDrag.y0) < TAP_PX &&
-                 performance.now() - powDrag.t0 < TAP_MS;
   powDrag = null;
   powTip.style.display = 'none';
-  if (wasTap) sendFire();                                 // quick tap = fire
+  sendFire();                                             // release = fire (drag sets power first)
 }
 
 let lastAimSend = 0;
