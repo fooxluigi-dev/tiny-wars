@@ -38,6 +38,37 @@ function audioGesture() {   // iOS: create/resume inside a gesture (tap = pointe
 document.addEventListener('pointerdown', audioGesture, true);
 document.addEventListener('click', audioGesture, true);
 
+// ---------- ambient music: soft synthesized pad, starts with the match ----------
+let musicGain = null;
+function startMusic() {
+  if (musicGain || !actx) return;
+  try {
+    musicGain = actx.createGain();
+    musicGain.gain.value = 0;
+    musicGain.connect(actx.destination);
+    const filt = actx.createBiquadFilter();
+    filt.type = 'lowpass'; filt.frequency.value = 700; filt.Q.value = 0.4;
+    filt.connect(musicGain);
+    [110, 164.8, 220, 261.6].forEach((f, i) => {        // A2 E3 A3 C4 — calm minor pad
+      const o = actx.createOscillator();
+      o.type = i % 2 ? 'sine' : 'triangle';
+      o.frequency.value = f;
+      o.detune.value = (i - 1.5) * 5;
+      const g = actx.createGain(); g.gain.value = 0.22;
+      const lfo = actx.createOscillator(); lfo.frequency.value = 0.05 + i * 0.017;   // slow independent swell
+      const lg = actx.createGain(); lg.gain.value = 0.1;
+      lfo.connect(lg); lg.connect(g.gain);
+      o.connect(g); g.connect(filt);
+      o.start(); lfo.start();
+    });
+    applyMusicGain(6);                                   // long fade-in, no abrupt start
+  } catch (e) {}
+}
+function applyMusicGain(fadeSec) {
+  if (!musicGain || !actx) return;
+  musicGain.gain.setTargetAtTime(muted ? 0 : 0.16, actx.currentTime, (fadeSec || 0.5) / 3);
+}
+
 function sfx(kind) {
   if (muted) return;
   if (!actx) initAudio();          // may start suspended; gesture listener resumes it
@@ -136,6 +167,8 @@ function handle(m) {
       for (const p of S.players) p.facing = p.f;
       terrain = new Float64Array(S._terrain);
       started = true;
+      if (!actx) initAudio();
+      startMusic();
       cam.mode = 'follow'; cam.zoomUser = 1.8;    // fresh match: standard framing
       $('menu').style.display = 'none';
       $('winScreen').style.display = 'none';
@@ -369,11 +402,10 @@ function stickDown(e) {
 }
 function stickMove(e) {
   joy.fx = e.clientX; joy.fy = e.clientY;
-  const dx = e.clientX - joy.x0, dy = e.clientY - joy.y0;
-  const off = Math.max(-1, Math.min(1, -dy / STICK_R));   // up = +
-  joy.rate = Math.sign(off) * off * off * 45;             // quadratic: micro = fine aim, full = 45°/s
+  const dx = e.clientX - joy.x0;
+  joy.rate = 0;                                           // left stick never aims
   fjoyKnob.style.transform =
-    `translate(calc(-50% + ${(dx * .5).toFixed(1)}px), calc(-50% + ${(-off * STICK_R * .7).toFixed(1)}px))`;
+    `translate(calc(-50% + ${Math.max(-STICK_R * .7, Math.min(STICK_R * .7, dx * .7)).toFixed(1)}px), -50%)`;
   const walk = dx > STICK_R * 0.35 ? 1 : dx < -STICK_R * 0.35 ? -1 : 0;   // deadzone
   if (walk !== joy.walk) { joy.walk = walk; sendInput(walk, false); }
 }
@@ -383,34 +415,38 @@ function stickUp(e) {
   joy.held = false; joy.ptr = null; joy.rate = 0;
   if (joy.walk) { joy.walk = 0; sendInput(0, false); }
   fjoy.style.display = 'none';
-  sendAimThrottled(true);                                 // flush final angle
   if (!canActNow) return;
   const wasTap = Math.hypot(e.clientX - joy.x0, dy) < TAP_PX && dt < TAP_MS;
   if (wasTap || (dy < -60 && dt < 250)) sendInput(0, true);   // quick tap or up-flick = jump
 }
 
-let powDrag = null;   // {ptr, y0, p0}
-function powerDown(e) {
-  powDrag = { ptr: e.pointerId, x0: e.clientX, y0: e.clientY, p0: aim.power, t0: performance.now() };
-  powTip.style.display = 'block';
-  placePowTip(e);
-}
+let powDrag = null;   // right stick: {ptr, x0, y0, p0, t0}
 function placePowTip(e) {
   const r = cv.getBoundingClientRect();
   powTip.style.left = (e.clientX - r.left) + 'px';
   powTip.style.top = (e.clientY - r.top - 58) + 'px';
-  powTip.textContent = 'PWR ' + aim.power;
+  powTip.textContent = `${Math.round(aim.angle)}° · PWR ${aim.power}`;
+}
+function powerDown(e) {
+  powDrag = { ptr: e.pointerId, x0: e.clientX, y0: e.clientY, p0: aim.power, t0: performance.now(), rate: 0 };
+  powTip.style.display = 'block';
+  placePowTip(e);
 }
 function powerMove(e) {
   if (!canActNow) return;
-  const p = Math.max(5, Math.min(100, Math.round(powDrag.p0 + (powDrag.y0 - e.clientY) * 0.55)));  // up = more power
+  const dx = e.clientX - powDrag.x0;
+  const dy = e.clientY - powDrag.y0;
+  const off = Math.max(-1, Math.min(1, -dy / STICK_R));                 // Y = aim, quadratic
+  powDrag.rate = Math.sign(off) * off * off * 45;
+  const p = Math.max(5, Math.min(100, Math.round(powDrag.p0 + dx * 0.5)));   // X = power slide, right = more
   if (p !== aim.power) { aim.power = p; sendAimThrottled(); refreshChip(); }
   placePowTip(e);
 }
 function powerUp(e) {
   powDrag = null;
   powTip.style.display = 'none';
-  sendFire();                                             // release = fire (drag sets power first)
+  sendAimThrottled(true);                                // flush final angle/power
+  if (canActNow) sendFire();                             // release = fire
 }
 
 let lastAimSend = 0;
@@ -599,6 +635,7 @@ $('muteBtn').onclick = () => {
   muted = !muted;
   localStorage.setItem('tw_mute', muted ? '1' : '0');
   $('muteBtn').textContent = muted ? '🔇' : '🔊';
+  applyMusicGain();
   if (!muted) { initAudio(); sfx('turn'); }
 };
 $('muteBtn').textContent = muted ? '🔇' : '🔊';
@@ -630,10 +667,11 @@ function draw() {
   const dt = Math.min(0.1, (now - (draw.t || now)) / 1000); draw.t = now;
   if (started) {
     camFrame(dt);
-    // continuous aiming: joystick held, or arrow keys held (desktop equivalent)
-    let rate = joy.held ? joy.rate : 0;
-    if (!joy.held && keys['arrowup']) rate = 28;
-    if (!joy.held && keys['arrowdown']) rate = -28;
+    // continuous aiming: right stick held, or arrow keys held (desktop equivalent)
+    const rHeld = powDrag && canActNow;
+    let rate = rHeld ? powDrag.rate : 0;
+    if (!rHeld && keys['arrowup']) rate = 28;
+    if (!rHeld && keys['arrowdown']) rate = -28;
     if (rate && canActNow) aimStep(rate * dt);
   }
   const dpr = Math.min(devicePixelRatio || 1, 2);
@@ -940,7 +978,9 @@ setInterval(() => send({ t: 'ping' }), 25000);
 updateAimUI();
 refreshWeapons();
 window.__dbg = { get sfx() { return sfx; }, get actx() { return actx; }, get floaters() { return floaters; },
-  get trail() { return trail; }, get muted() { return muted; } };   // E2E hook
+  get trail() { return trail; }, get muted() { return muted; }, get music() { return musicGain; },
+  get powDrag() { return powDrag; }, get aim() { return aim; },
+  get canAct() { return canActNow; }, get myTeam() { return myTeam; }, get joy() { return joy; } };   // E2E hook
 connect();
 requestAnimationFrame(draw);
 })();
