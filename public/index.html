@@ -60,14 +60,17 @@
   #camBtns { position:absolute; left:50%; top:6px; transform:translateX(-50%); display:flex; gap:6px; z-index:6; }
   #camBtns .cbtn { min-width:44px; min-height:38px; font-size:16px; background:rgba(8,11,22,.7); }
 
-  /* ---------- aim joystick ---------- */
-  #aimJoy { position:absolute; left:12px; bottom:10px; width:58px; height:150px;
-    background:rgba(8,11,22,.62); border:1px solid #2c3a5c; border-radius:29px; z-index:6;
-    touch-action:none; display:flex; align-items:center; justify-content:center; }
-  #joyKnob { width:46px; height:46px; border-radius:50%; background:linear-gradient(180deg,#ffd166,#ffb347);
-    box-shadow:0 3px 10px rgba(0,0,0,.5); pointer-events:none; }
-  #joyVal { position:absolute; bottom:-20px; left:50%; transform:translateX(-50%); font-size:11px;
-    color:#ffd166; font-weight:800; }
+  /* ---------- floating aim stick (invisible until touched) ---------- */
+  #fjoy { position:absolute; width:132px; height:132px; border-radius:50%; z-index:6; display:none;
+    background:radial-gradient(circle, rgba(8,11,22,.55) 0%, rgba(8,11,22,.25) 70%, transparent 100%);
+    border:2px solid rgba(255,209,102,.5); pointer-events:none; transform:translate(-50%,-50%); }
+  #fjoyKnob { position:absolute; left:50%; top:50%; width:52px; height:52px; border-radius:50%;
+    background:linear-gradient(180deg,#ffd166,#ffb347); box-shadow:0 3px 10px rgba(0,0,0,.55);
+    transform:translate(-50%,-50%); display:flex; align-items:center; justify-content:center;
+    font-size:12px; font-weight:800; color:#0a0e1a; }
+  #powTip { position:absolute; display:none; z-index:6; pointer-events:none; transform:translate(-50%,-50%);
+    background:rgba(8,11,22,.85); border:1px solid #ffd166; color:#ffd166; font-weight:800; font-size:15px;
+    padding:8px 13px; border-radius:11px; }
 
   /* ---------- weapon inventory ---------- */
   #wpanel { position:absolute; inset:0; display:none; flex-direction:column; z-index:20;
@@ -88,34 +91,15 @@
   .wtile.off { opacity:.4; }
   #wreason { font-size:12px; color:#ff9d7a; text-align:center; padding-top:8px; min-height:18px; }
 
-  /* ---------- controls ---------- */
-  #controls { display:none; padding:8px 10px calc(8px + env(safe-area-inset-bottom)); gap:8px;
-    background:rgba(8,11,22,.92); border-top:1px solid #1d2740; z-index:10; align-items:stretch; }
-  .pad { display:flex; gap:8px; align-items:center; }
   .cbtn { border:none; border-radius:12px; background:#1c2740; color:#e8ecf5; font-size:19px; font-weight:700;
     min-width:58px; min-height:54px; display:flex; align-items:center; justify-content:center; cursor:pointer;
     border:1px solid #2c3a5c; touch-action:none; }
   .cbtn:active, .cbtn.on { background:#31436e; }
   .cbtn.disabled { opacity:.35; pointer-events:none; }
-  #fireBtn { background:linear-gradient(180deg,#ff7043,#e64a19); border:none; font-size:16px; letter-spacing:1px;
-    min-width:92px; box-shadow:0 4px 14px rgba(230,74,25,.4); }
-  #fireBtn:active { transform:scale(.95); }
-  #endBtn { background:#26314f; font-size:12px; min-width:64px; }
-  #weaponRow { display:flex; gap:6px; overflow-x:auto; padding:2px; flex:1; scrollbar-width:none; }
-  #weaponRow::-webkit-scrollbar { display:none; }
-  .wbtn { border-radius:10px; min-width:54px; min-height:54px; font-size:10px; background:#141c33; color:#9fb0d4;
-    border:1px solid #2c3a5c; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px; cursor:pointer; }
-  .wbtn .ico { font-size:20px; }
-  .wbtn.sel { background:#31436e; color:#fff; border-color:#ffd166; }
-  #powerWrap { position:absolute; right:10px; top:8px; display:flex; flex-direction:column; align-items:center; gap:4px;
-    background:rgba(8,11,22,.7); padding:8px 10px; border-radius:12px; border:1px solid #1d2740; z-index:5; }
-  #powerWrap label { font-size:10px; color:#8a94ad; letter-spacing:1px; }
-  #power { writing-mode:vertical-lr; direction:rtl; width:26px; height:150px; accent-color:#ffb347; touch-action:none; }
-  #powerVal { font-size:12px; font-weight:800; color:#ffd166; }
+  #endBtn { font-size:13px; min-width:64px; }
   #aimHint { position:absolute; left:10px; top:8px; font-size:12px; font-weight:700; color:#cdd6ea;
     background:rgba(8,11,22,.72); border:1px solid #1d2740; padding:6px 11px; border-radius:10px;
-    z-index:5; display:none; white-space:nowrap; }
-  #aimJoy.off { opacity:.35; pointer-events:none; }
+    z-index:5; display:none; white-space:nowrap; cursor:pointer; }
 
   /* ---------- overlay screens ---------- */
   .overlay { position:fixed; inset:0; display:none; flex-direction:column; align-items:center; justify-content:center;
@@ -149,36 +133,16 @@
     <div id="connBadge">⚠ disconnected — reconnecting…</div>
     <div id="aimHint"></div>
     <div id="camBtns">
-      <button class="cbtn" id="camFollow" title="Centre on my soldier">⌖</button>
+      <button class="cbtn" id="endBtn" title="End your turn">⏭</button>
       <button class="cbtn" id="camOverview" title="Whole battlefield">🗺</button>
       <button class="cbtn" id="muteBtn" title="Sound on/off">🔊</button>
     </div>
-    <div id="aimJoy" title="Drag up/down to aim">
-      <div id="joyKnob"></div>
-      <div id="joyVal">45°</div>
-    </div>
+    <div id="fjoy"><div id="fjoyKnob">45°</div></div>
+    <div id="powTip">PWR 60</div>
     <div id="wpanel">
       <div class="wph"><span>WEAPONS</span><button id="wclose">✕</button></div>
       <div id="wgrid"></div>
       <div id="wreason"></div>
-    </div>
-    <div id="powerWrap">
-      <label>POWER</label>
-      <input id="power" type="range" min="5" max="100" value="60">
-      <div id="powerVal">60</div>
-    </div>
-  </div>
-
-  <div id="controls">
-    <div class="pad">
-      <button class="cbtn" id="leftBtn">◀</button>
-      <button class="cbtn" id="rightBtn">▶</button>
-      <button class="cbtn" id="jumpBtn">⤒</button>
-    </div>
-    <button id="weaponBtn" class="cbtn" style="flex:1;min-width:110px;font-size:14px;gap:4px">🚀 WEAPONS</button>
-    <div class="pad">
-      <button class="cbtn" id="endBtn">END<br>TURN</button>
-      <button class="cbtn" id="fireBtn">🔥 FIRE</button>
     </div>
   </div>
 </div>

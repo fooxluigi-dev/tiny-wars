@@ -140,7 +140,6 @@ function handle(m) {
       $('menu').style.display = 'none';
       $('winScreen').style.display = 'none';
       $('hud').style.display = 'flex';
-      $('controls').style.display = 'flex';
       if (!m.resume) showMsg('⚔️ Battle starts!');
       break;
     }
@@ -310,14 +309,8 @@ function updateHUD() {
   }
   const canAct = mine && S.phase === 'aim' && connected;
   canActNow = canAct;
-  for (const id of ['leftBtn', 'rightBtn', 'jumpBtn', 'fireBtn', 'endBtn'])
-    $(id).classList.toggle('disabled', !canAct);
-  $('powerWrap').style.display = canAct ? 'flex' : 'none';
-  $('aimJoy').classList.toggle('off', !canAct);        // dim joystick when not your turn
+  $('endBtn').classList.toggle('disabled', !canAct);
   refreshChip();
-  const wl = WEAPON_LIST.find(w => w[0] === weapon) || WEAPON_LIST[0];
-  const wlbl = `${wl[1]} ${wl[2].toUpperCase()}`;
-  if ($('weaponBtn').dataset.lbl !== wlbl) { $('weaponBtn').dataset.lbl = wlbl; $('weaponBtn').textContent = `${wlbl} ▾`; }
 }
 
 // ---------- controls ----------
@@ -327,62 +320,98 @@ function myActiveIdx() {
 function sendAim() { send({ t: 'aim', angle: aim.angle, power: aim.power }); }
 function sendInput(move, jump) { send({ t: 'input', move, jump: !!jump }); }
 
-function holdBtn(id, onDown, onUp) {
-  const el = $(id);
-  const down = e => { e.preventDefault(); el.classList.add('on'); onDown(); };
-  const up = e => { e.preventDefault(); el.classList.remove('on'); if (onUp) onUp(); };
-  el.addEventListener('pointerdown', down);
-  el.addEventListener('pointerup', up);
-  el.addEventListener('pointercancel', up);
-  el.addEventListener('pointerleave', up);
-}
-holdBtn('leftBtn', () => sendInput(-1, false), () => sendInput(0, false));
-holdBtn('rightBtn', () => sendInput(1, false), () => sendInput(0, false));
-holdBtn('jumpBtn', () => sendInput(0, true));
 function aimUp(d) {
   aim.angle = Math.max(0, Math.min(90, aim.angle + d));
   sendAim(); updateAimUI();
 }
-$('power').addEventListener('input', e => { aim.power = +e.target.value; $('powerVal').textContent = aim.power; sendAim(); });
-function refreshChip() {   // one status chip: weapon + aim, top-left
+function refreshChip() {   // one status chip: weapon + aim, tappable = weapon inventory
   const el = $('aimHint');
   if (!started) { el.style.display = 'none'; return; }
   const wl = WEAPON_LIST.find(w => w[0] === weapon) || WEAPON_LIST[0];
   el.style.display = 'block';
-  el.textContent = canActNow
+  el.textContent = (canActNow
     ? `${wl[1]} ${wl[2]} · ${Math.round(aim.angle)}° · PWR ${aim.power}`
-    : `${wl[1]} ${wl[2]}`;
+    : `${wl[1]} ${wl[2]}`) + ' ▾';
 }
 function updateAimUI() {
-  $('joyVal').textContent = `${Math.round(aim.angle)}°`;
+  fjoyKnob.textContent = `${Math.round(aim.angle)}°`;
   refreshChip();
 }
-
-// ---------- aim joystick: vertical drag; rate ∝ displacement; release stops ----------
-const joy = { held: false, ptr: null, rate: 0 };
-const joyEl = $('aimJoy'), knob = $('joyKnob');
-function joyMove(e) {
-  const r = joyEl.getBoundingClientRect();
-  const mid = r.top + r.height / 2;
-  const off = Math.max(-1, Math.min(1, (mid - e.clientY) / (r.height / 2)));  // up = +
-  joy.rate = Math.sign(off) * off * off * 45;             // quadratic: micro-moves = fine aim, full deflection = 45°/s
-  knob.style.transform = `translateY(${(-off * (r.height / 2 - 26)).toFixed(1)}px)`;
-}
-joyEl.addEventListener('pointerdown', e => {
+function sendFire() {
   if (!canActNow) return;
-  joy.held = true; joy.ptr = e.pointerId;
-  joyEl.setPointerCapture(e.pointerId);
-  joyMove(e); e.preventDefault();
-});
-joyEl.addEventListener('pointermove', e => { if (joy.held && e.pointerId === joy.ptr) joyMove(e); });
-function joyEnd(e) {
-  if (e.pointerId !== joy.ptr) return;
-  joy.held = false; joy.ptr = null; joy.rate = 0;
-  knob.style.transform = 'translateY(0px)';
-  sendAimThrottled(true);                                 // flush final angle
+  send({ t: 'fire', weapon }); sendAim();
 }
-joyEl.addEventListener('pointerup', joyEnd);
-joyEl.addEventListener('pointercancel', joyEnd);
+
+// ---------- 2-thumb touch zones (pointerType touch only; desktop keeps keyboard+mouse) ----------
+// zones: top 40% = camera pan | bottom-left = floating aim/walk stick | bottom-right = drag power / tap fire
+const joy = { held: false, ptr: null, rate: 0, walk: 0, x0: 0, y0: 0, t0: 0, fx: 0, fy: 0 };
+const fjoy = $('fjoy'), fjoyKnob = $('fjoyKnob'), powTip = $('powTip');
+const STICK_R = 66, TAP_PX = 16, TAP_MS = 300;
+
+function zoneOf(e) {
+  if (e.pointerType === 'mouse') return 'pan';            // desktop mouse always pans
+  if (!canActNow) return 'pan';
+  const r = cv.getBoundingClientRect();
+  if (e.clientY - r.top < r.height * 0.40) return 'pan';  // top strip = camera
+  return (e.clientX - r.left) < r.width / 2 ? 'stick' : 'power';
+}
+
+function stickDown(e) {
+  joy.held = true; joy.ptr = e.pointerId; joy.rate = 0; joy.walk = 0;
+  joy.x0 = e.clientX; joy.y0 = e.clientY; joy.t0 = performance.now();
+  joy.fx = e.clientX; joy.fy = e.clientY;
+  const r = cv.getBoundingClientRect();
+  fjoy.style.left = (e.clientX - r.left) + 'px';
+  fjoy.style.top = (e.clientY - r.top) + 'px';
+  fjoy.style.display = 'block';
+  fjoyKnob.style.transform = 'translate(-50%,-50%)';
+  updateAimUI();
+}
+function stickMove(e) {
+  joy.fx = e.clientX; joy.fy = e.clientY;
+  const dx = e.clientX - joy.x0, dy = e.clientY - joy.y0;
+  const off = Math.max(-1, Math.min(1, -dy / STICK_R));   // up = +
+  joy.rate = Math.sign(off) * off * off * 45;             // quadratic: micro = fine aim, full = 45°/s
+  fjoyKnob.style.transform =
+    `translate(calc(-50% + ${(dx * .5).toFixed(1)}px), calc(-50% + ${(-off * STICK_R * .7).toFixed(1)}px))`;
+  const walk = dx > STICK_R * 0.35 ? 1 : dx < -STICK_R * 0.35 ? -1 : 0;   // deadzone
+  if (walk !== joy.walk) { joy.walk = walk; sendInput(walk, false); }
+}
+function stickUp(e) {
+  const wasTap = Math.hypot(e.clientX - joy.x0, e.clientY - joy.y0) < TAP_PX &&
+                 performance.now() - joy.t0 < TAP_MS;
+  joy.held = false; joy.ptr = null; joy.rate = 0;
+  if (joy.walk) { joy.walk = 0; sendInput(0, false); }
+  fjoy.style.display = 'none';
+  sendAimThrottled(true);                                 // flush final angle
+  if (wasTap && canActNow) sendInput(0, true);            // quick tap = jump
+}
+
+let powDrag = null;   // {ptr, y0, p0}
+function powerDown(e) {
+  powDrag = { ptr: e.pointerId, x0: e.clientX, y0: e.clientY, p0: aim.power, t0: performance.now() };
+  powTip.style.display = 'block';
+  placePowTip(e);
+}
+function placePowTip(e) {
+  const r = cv.getBoundingClientRect();
+  powTip.style.left = (e.clientX - r.left) + 'px';
+  powTip.style.top = (e.clientY - r.top - 58) + 'px';
+  powTip.textContent = 'PWR ' + aim.power;
+}
+function powerMove(e) {
+  if (!canActNow) return;
+  const p = Math.max(5, Math.min(100, Math.round(powDrag.p0 + (powDrag.y0 - e.clientY) * 0.55)));  // up = more power
+  if (p !== aim.power) { aim.power = p; sendAimThrottled(); refreshChip(); }
+  placePowTip(e);
+}
+function powerUp(e) {
+  const wasTap = Math.hypot(e.clientX - powDrag.x0, e.clientY - powDrag.y0) < TAP_PX &&
+                 performance.now() - powDrag.t0 < TAP_MS;
+  powDrag = null;
+  powTip.style.display = 'none';
+  if (wasTap) sendFire();                                 // quick tap = fire
+}
 
 let lastAimSend = 0;
 function sendAimThrottled(force) {
@@ -396,7 +425,6 @@ function aimStep(delta) {
   aim.angle = a; sendAimThrottled(); updateAimUI();
 }
 
-$('fireBtn').onclick = () => { send({ t: 'fire', weapon }); sendAim(); };
 $('endBtn').onclick = () => send({ t: 'endturn' });
 
 // ---------- weapon inventory: one HUD button opens a large touch panel ----------
@@ -424,7 +452,7 @@ function refreshWeapons() {
   }
   wreason.textContent = canActNow ? '' : '🔒 Weapons lock while it is not your turn';
 }
-$('weaponBtn').onclick = () => { refreshWeapons(); wpanel.classList.add('open'); };
+$('aimHint').onclick = () => { refreshWeapons(); wpanel.classList.add('open'); };
 $('wclose').onclick = () => wpanel.classList.remove('open');
 
 function selectWeapon(id) {
@@ -440,7 +468,7 @@ addEventListener('keydown', e => {
   keys[e.key.toLowerCase()] = true;
   if (e.key === 'ArrowUp') { aimUp(3); e.preventDefault(); }
   if (e.key === 'ArrowDown') { aimUp(-3); e.preventDefault(); }   // tap kick; hold = continuous in draw()
-  if (e.key === ' ') { $('fireBtn').click(); e.preventDefault(); }
+  if (e.key === ' ') { sendFire(); e.preventDefault(); }
   if (e.key.toLowerCase() === 'e') send({ t: 'endturn' });
   if ('12345'.includes(e.key)) { const w = WEAPON_LIST[+e.key - 1]; if (w) selectWeapon(w[0]); }
   syncKeys();
@@ -456,8 +484,8 @@ function syncKeys() {
 addEventListener('keydown', e => { if (e.key.toLowerCase() === 'w' || e.key.toLowerCase() === 'f') sendInput(0, true); });
 // hold Q/E to change power on desktop
 addEventListener('keydown', e => {
-  if (e.key.toLowerCase() === 'q') { aim.power = Math.max(5, aim.power - 5); $('power').value = aim.power; $('powerVal').textContent = aim.power; sendAim(); }
-  if (e.key.toLowerCase() === 'r') { aim.power = Math.min(100, aim.power + 5); $('power').value = aim.power; $('powerVal').textContent = aim.power; sendAim(); }
+  if (e.key.toLowerCase() === 'q') { aim.power = Math.max(5, aim.power - 5); sendAim(); refreshChip(); }
+  if (e.key.toLowerCase() === 'r') { aim.power = Math.min(100, aim.power + 5); sendAim(); refreshChip(); }
 });
 // ---------- camera (render-only: never touches physics or server state) ----------
 // mode: follow (auto-track active/projectile) | manual (user dragged) | overview (whole map)
@@ -515,6 +543,9 @@ const ptrs = new Map();
 let drag0 = null, pinch0 = 0, pinchZ0 = 1;
 cv.addEventListener('pointerdown', e => {
   cv.setPointerCapture(e.pointerId);
+  const zone = zoneOf(e);
+  if (zone === 'stick') { stickDown(e); return; }
+  if (zone === 'power') { powerDown(e); return; }
   ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
   if (ptrs.size === 1) drag0 = { x: e.clientX, y: e.clientY, cx: cam.x, cy: cam.y };
   if (ptrs.size === 2) {
@@ -525,6 +556,8 @@ cv.addEventListener('pointerdown', e => {
   }
 });
 cv.addEventListener('pointermove', e => {
+  if (joy.held && e.pointerId === joy.ptr) { stickMove(e); return; }
+  if (powDrag && e.pointerId === powDrag.ptr) { powerMove(e); return; }
   if (!ptrs.has(e.pointerId)) return;
   ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
   const rect = cv.getBoundingClientRect();
@@ -548,6 +581,8 @@ cv.addEventListener('pointermove', e => {
   }
 });
 function ptrUp(e) {
+  if (joy.held && e.pointerId === joy.ptr) { stickUp(e); return; }
+  if (powDrag && e.pointerId === powDrag.ptr) { powerUp(e); return; }
   ptrs.delete(e.pointerId);
   if (ptrs.size === 0) drag0 = null;
 }
@@ -559,7 +594,6 @@ cv.addEventListener('wheel', e => {
   zoomAt(e.deltaY < 0 ? 1.12 : 1 / 1.12, e.clientX - rect.left, e.clientY - rect.top);
 }, { passive: false });
 
-$('camFollow').onclick = () => { cam.mode = 'follow'; };
 $('camOverview').onclick = () => { cam.mode = 'overview'; };
 $('muteBtn').onclick = () => {
   muted = !muted;
