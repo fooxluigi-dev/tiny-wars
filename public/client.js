@@ -378,13 +378,15 @@ function stickMove(e) {
   if (walk !== joy.walk) { joy.walk = walk; sendInput(walk, false); }
 }
 function stickUp(e) {
-  const wasTap = Math.hypot(e.clientX - joy.x0, e.clientY - joy.y0) < TAP_PX &&
-                 performance.now() - joy.t0 < TAP_MS;
+  const dt = performance.now() - joy.t0;
+  const dy = e.clientY - joy.y0;
   joy.held = false; joy.ptr = null; joy.rate = 0;
   if (joy.walk) { joy.walk = 0; sendInput(0, false); }
   fjoy.style.display = 'none';
   sendAimThrottled(true);                                 // flush final angle
-  if (wasTap && canActNow) sendInput(0, true);            // quick tap = jump
+  if (!canActNow) return;
+  if (dy < -60 && dt < 250) sendInput(0, true);           // fast up-flick = jump (no shot)
+  else sendFire();                                        // release = fire
 }
 
 let powDrag = null;   // {ptr, y0, p0}
